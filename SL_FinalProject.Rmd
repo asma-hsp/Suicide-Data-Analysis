@@ -1,0 +1,3470 @@
+---
+title: "Statistical Learning"
+author: "<i>Amin Almasi, Asma Hoseinpour </i>"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: true
+  html_document:
+    toc: yes
+    toc_float: true
+    df_print: paged
+    highlight: tango
+---
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+```
+
+```{r}
+library(tidyverse) # general
+library(ggalt) # dumbbell plots
+library(grid) # plots
+library(gridExtra) # plots
+library(ggcorrplot) 
+library(ggplot2)
+library(rworldmap) # quick country-level heat map
+library(countrycode) # continent
+library(broom) # significant trends within countries
+library(lubridate) # dealing with dates
+library(car)
+library(scales)
+```
+
+# 1.Obtaining Data 
+
+## 1.1 Suicide Data
+
+The dataset was sourced from [links](https://www.kaggle.com/datasets/russellyates88/suicide-rates-overview-1985-to-2016?datasetId=85351&sortBy=voteCount&language=R) and contains a comprehensive collection of suicide statistics broken down by country, year, age, and sex. This data has been gathered from multiple datasets with the intention of identifying trends and patterns in global suicide rates. Here are the features of this dataset:
+
+* **Country**: The country where the data was recorded.
+
+* **Year**: The year when the data was recorded. The data was collect from 1985 until 2016.
+
+* **Sex**: The sex of the individuals included in the suicide count.
+
+* **Age**: The age group of the individuals included in the suicide count.
+
+* **Suicide_no**: The total number of suicides recorded in a specific country, year, age group, and sex.
+
+* **Population**: The total population of the specific age and sex group in the country for that year.
+
+* **Suicide/ 100k pop**: This is a derived metric representing the number of suicides per 100,000 people in the population, calculated as (Suicide_no / Population) * 100000.
+
+* **HDI_for_year**: Human Development Index, a statistic composite index of life expectancy, education, and per capita income indicators.
+
+* **GDP_for_year ($)**: The gross domestic product (GDP) of the country for the specified year, measured in US dollars.
+
+* **GDP_per_capita (\$)**: The GDP per capita of the country for the specified year, also measured in US dollars. It is calculated by dividing the GDP_for_year ($) by the total population of the country.
+
+* **Generation**: The generation cohort of the individuals included in the suicide count (e.g., Gen X, Boomers, etc.).
+
+```{r}
+suicide_data <- read_csv("suicide_data.csv", show_col_types = FALSE)
+head(suicide_data)
+```
+```{r}
+dim(suicide_data)
+```
+We further supplemented our analysis by incorporating additional features, which we hypothesize may significantly impact suicide rates.
+
+## 1.2 Continet
+
+We've enriched our dataset by appending a 'continent' feature corresponding to each country. This enhancement, accomplished utilizing the 'countrycode' library, will facilitate subsequent geographical analyses.
+
+```{r}
+# getting continent data:
+suicide_data$continent <- countrycode(sourcevar = suicide_data$country,
+                              origin = "country.name",
+                              destination = "continent")
+
+dim(suicide_data)
+```
+
+
+## 1.3 Life Expectancy
+
+We also added 'life expectancy' data from [links](https://databank.worldbank.org/). Remember, the Human Development Index (HDI) also measures life expectancy, so these two features might be highly correlated. We'll keep this in mind for our analysis.
+
+```{r}
+life_exp_data <-read_csv('life_exp.csv',show_col_types = FALSE)
+head(life_exp_data)
+```
+
+
+```{r}
+life_exp_data$Time <- as.integer(life_exp_data$Time)
+
+life_exp_data <- life_exp_data %>%
+  rename( life_exp = `Value`,
+          year = `Time`,
+          country = `Country Name`) %>%
+  as.data.frame()
+```
+
+We've identified that the format of some country names differs between the suicide data and the life expectancy dataset. To prevent any further discrepancies, it's imperative that we address and rectify these inconsistencies.
+
+```{r}
+name_changes_life <- c("Bahamas, The" = "Bahamas", 
+                  "Czechia" = "Czech Republic",
+                  "Kyrgyz Republic" = "Kyrgyzstan",
+                  "Macao SAR, China" = "Macau",
+                  "Korea, Rep." = "Republic of Korea",
+                  "St. Kitts and Nevis" = "Saint Kitts and Nevis",
+                  "St. Lucia" = "Saint Lucia",
+                  "St. Vincent and the Grenadines" = "Saint Vincent and Grenadines",
+                  "Slovak Republic" = "Slovakia",
+                  "Turkiye" = "Turkey"
+                  )
+
+life_exp_data$country[life_exp_data$country %in% names(name_changes_life)] <- 
+    name_changes_life[life_exp_data$country[life_exp_data$country %in% names(name_changes_life)]]
+```
+
+```{r}
+data <- suicide_data %>%
+  left_join(life_exp_data[, c('year', 'country', 'life_exp')], 
+            by = c('year', 'country'))
+```
+
+
+```{r}
+dim(data)
+```
+## 1.4 Temperature
+
+Our investigation suggests that temperature might influence suicide rates.(source: [links](https://annals-general-psychiatry.biomedcentral.com/articles/10.1186/s12991-016-0106-2#ref-CR47)) So, we incorporated temperature data into our dataset from [link](https://www.kaggle.com/datasets/berkeleyearth/climate-change-earth-surface-temperature-data?sort=votes) to further explore this possibility. This dataset covers temperature data since 1750 till 2013. We include three additional features:
+
+* **max_temp**: The highest monthly temperature for each year.
+* **min_temp**: The lowest monthly temperature for each year.
+* **avg_temp**: The average monthly temperature for each year.
+
+```{r}
+temp_data <- read_csv("GlobalLandTemperaturesByCountry.csv",show_col_types = FALSE)
+head(temp_data)
+```
+
+```{r}
+# Extract year and month from date_column
+temp_data$year <- year(temp_data$dt)
+temp_data$month <- month(temp_data$dt)
+
+temp_data <- select(temp_data, -dt, -"AverageTemperatureUncertainty")
+temp_data<- rename(temp_data, country = Country)
+
+temp_data$year <-as.integer(temp_data$year)
+temp_data$month <-as.integer(temp_data$month)
+temp_data$AverageTemperature <-as.numeric(temp_data$AverageTemperature)
+
+temp_data <- temp_data %>%
+  filter(year >= 1985 & year <= 2016)
+
+temp_data <- temp_data %>%
+  group_by(country, year) %>%
+  mutate(
+    avg_temp = sum(AverageTemperature, na.rm = TRUE) / sum(!is.na(AverageTemperature)),
+    max_temp = max(AverageTemperature, na.rm = TRUE),
+    min_temp = min(AverageTemperature, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+temp_data <- select(temp_data, -month, -"AverageTemperature")
+
+temp_data <-distinct(temp_data)
+
+temp_data <- temp_data %>%
+  filter_all(all_vars(!is.infinite(.)))
+
+```
+
+As with the life expectancy data, we've noticed discrepancies in the formatting of country names between the suicide data and temperature dataset. To avoid any potential issues down the line, it's crucial that we reconcile these inconsistencies and standardize the country names across all datasets.
+
+```{r}
+name_changes_temp <- c("Antigua And Barbuda" = "Antigua and Barbuda", 
+                  "Bosnia And Herzegovina" = "Bosnia and Herzegovina",
+                  "South Korea" = "Republic of Korea",
+                  "Russia" = "Russian Federation",
+                  "Saint Kitts And Nevis" = "Saint Kitts and Nevis",
+                  "Trinidad And Tobago" = "Trinidad and Tobago",
+                  "Saint Vincent And The Grenadines" = "Saint Vincent and Grenadines"
+                  )
+temp_data$country[temp_data$country %in% names(name_changes_temp)] <- 
+    name_changes_temp[temp_data$country[temp_data$country %in% names(name_changes_temp)]]
+```
+
+```{r}
+data <- data %>%
+  left_join(temp_data[, c('year', 'country', 'avg_temp', 'max_temp', 'min_temp')], 
+            by = c('year', 'country'))
+```
+
+```{r}
+dim(data)
+```
+Now that we've collected all the necessary data, our next step is to clean and preprocess this data for further analysis.
+
+
+# 2.Clean and Filter Data
+
+```{r}
+glimpse(head(data, 8))
+```
+```{r}
+print(colnames(data))
+```
+
+```{r}
+sapply(data, function(x) length(unique(x)))
+```
+## 2.1 Columns and Values
+
+```{r}
+data <- data %>% 
+  rename(suicide_ratio = `suicides/100k pop`, 
+         country_year = `country-year`,
+         HDI_for_year = `HDI for year`,
+         GDP_for_year = `gdp_for_year ($)`, 
+         GDP_per_capita = `gdp_per_capita ($)`) %>%
+  as.data.frame()
+
+data$age <- gsub(" years", "", data$age)
+
+data$sex <- ifelse(data$sex == "male", "Male", "Female")
+```
+
+## 2.2 Missing Values
+
+### 2.2.1 Data Scarcity by Country/Year
+
+In an ideal dataset, every unique combination of country and year (country_year) would be represented by 12 entries (2 genders across 6 age groups). Now, we need to verify the completeness of our data for each country_year combination.
+
+```{r}
+data %>%
+  group_by(country_year) %>%
+  count() %>% #this SHOULD give 12 rows for every county-year combination (6 age bands * 2 gender)
+  filter(n != 12)
+```
+It appears that there is problem with 2016 data.
+
+```{r}
+year_value_counts <- as.data.frame(sort(table(data$year), decreasing = FALSE))
+names(year_value_counts) <- c("Year", "Count")
+head(year_value_counts,5)
+```
+Our exploration reveals that the dataset for the year 2016 is not only sparse, but also incomplete for the few countries that have entries. Additionally, data for the years between 1985 and 1989 are also quite limited. These issues need to be addressed.
+As a solution, we've decided to exclude the data from 2016. We also drop the 'country_year' column from our dataset.
+
+```{r}
+data <- data %>%
+  filter(year != 2016) %>% # I therefore exclude 2016 data
+  select(-country_year)
+```
+
+In the following step, we focus on filtering our dataset to ensure its robustness for further analysis. Specifically, we are addressing the issue of certain countries that have insufficient data spread across the years. These sparse data points can potentially skew our analysis or generate inaccurate insights. Therefore, we will systematically remove such countries from our dataset to maintain data integrity and reliability for subsequent steps in our study.
+
+```{r}
+minimum_years <- data %>%
+  group_by(country) %>%
+  summarize(rows = n(), 
+            years = rows / 12) %>%
+  arrange(years)
+
+minimum_years <- minimum_years %>%
+  filter(minimum_years$years<=3)
+  
+
+data <- data %>%
+filter(!(country %in% minimum_years$country))
+
+dim(data)
+```
+
+```{r}
+sapply(data, function(x) length(unique(x)))
+```
+We've further refined our dataset, eliminating data from 2016 and from eight countries due to their sparse or incomplete data. This ensures a more reliable basis for our analysis
+
+### 2.2.2 NA Values 
+
+Once we've eliminated the incomplete data, we'll proceed to inspect each feature for the presence of null values.
+
+```{r}
+na_counts <- sapply(data, function(x) sum(is.na(x))/nrow(data)*100)
+na_counts_df <- data.frame(Feature = names(na_counts), NA_ratio = na_counts)
+na_counts_df = na_counts_df %>% `rownames<-`( NULL )
+print(na_counts_df)
+```
+
+Approximately 70% of the 'HDI_for_year' column contains null values, necessitating an adjustment. Despite comprehensive exploration, we were unable to find any reliable data to fill these null values in the HDI. Additionally, since the formula for calculating the HDI changed in 2010, the index before and after this year is not directly comparable. As we've added life expectancy data for each year, the decision has been made to drop the 'HDI_for_year' column.
+
+```{r}
+data = subset(data, select = -c(HDI_for_year) )
+```
+Approximately 7.5% of the temperature data consists of null values which requires addressing. As a first step, we'll identify the countries that contain null values in their temperature data.
+
+```{r}
+data %>% 
+  group_by(country) %>% 
+  filter(all(is.na(min_temp))) %>% 
+  pull(country) %>% 
+  unique()
+```
+There's only one country, the Maldives (located in South Asia), for which temperature data is unavailable. Given that we have ample data for Asia, we've made the decision to exclude the Maldives from our dataset.
+
+```{r}
+data %>%
+  group_by(continent) %>%
+  summarise(num_countries = n_distinct(country))
+```
+
+```{r}
+countries_to_remove <- c("Maldives")
+
+data <- data[!data$country %in% countries_to_remove, ]
+```
+
+Given that our temperature data concludes in 2013, we will fill the 'avg_temp', 'min_temp', and 'max_temp' fields for the years 2014 and 2015 using the corresponding data from 2013. 
+
+We observed that the data for Ukraine in 2013 is missing from our suicide dataset. Consequently, to address this absence, we will use the data from 2012 for this particular country to approximate the values for 2014 and 2015.
+
+
+```{r}
+df_2013 <- data %>%
+  filter(year == 2013) %>%
+  select(country, avg_temp, min_temp, max_temp)
+
+names(df_2013)[2:4] <- paste0(names(df_2013)[2:4], "_2013")
+
+df_2012 <- data %>%
+  filter(year == 2012) %>%
+  select(country, avg_temp, min_temp, max_temp)
+
+names(df_2012)[2:4] <- paste0(names(df_2012)[2:4], "_2012")
+
+# Replace NA values in 2014 and 2015 using the lookup table
+data <- data %>%
+  mutate(year = as.character(year)) %>%
+  rowwise() %>%
+  mutate(
+    avg_temp = ifelse(year %in% c("2014", "2015") & is.na(avg_temp) & country != "Ukraine",
+                      df_2013$avg_temp_2013[df_2013$country == country],
+                      ifelse(year %in% c("2014", "2015") & is.na(avg_temp) & country == "Ukraine",
+                             df_2012$avg_temp_2012[df_2012$country == country],
+                             avg_temp)),
+    min_temp = ifelse(year %in% c("2014", "2015") & is.na(min_temp) & country != "Ukraine",
+                      df_2013$min_temp_2013[df_2013$country == country],
+                      ifelse(year %in% c("2014", "2015") & is.na(min_temp) & country == "Ukraine",
+                             df_2012$min_temp_2012[df_2012$country == country],
+                             min_temp)),
+    max_temp = ifelse(year %in% c("2014", "2015") & is.na(max_temp) & country != "Ukraine",
+                      df_2013$max_temp_2013[df_2013$country == country],
+                      ifelse(year %in% c("2014", "2015") & is.na(max_temp) & country == "Ukraine",
+                             df_2012$max_temp_2012[df_2012$country == country],
+                             max_temp))
+  ) %>%
+  ungroup()
+```
+
+```{r}
+data <- data %>%
+  mutate(year = as.integer(year))
+```
+
+```{r}
+dim(data)
+```
+
+```{r}
+na_counts <- sapply(data, function(x) sum(is.na(x))/nrow(data)*100)
+na_counts_df <- data.frame(Feature = names(na_counts), NA_ratio = na_counts)
+na_counts_df = na_counts_df %>% `rownames<-`( NULL )
+print(filter(na_counts_df, NA_ratio>0))
+```
+
+With all missing values effectively handled, our dataset is now clean and ready for further analysis. 
+
+
+## 2.3 Factorizing Categorical Data
+
+```{r}
+# Nominal factors
+data_nominal <- c('country', 'sex', 'continent')
+
+data[data_nominal] <- lapply(data[data_nominal], function(x){factor(x)})
+
+
+# Making age ordinal
+data$age <- factor(data$age, 
+                   ordered = T, 
+                   levels = c("5-14",
+                              "15-24", 
+                              "25-34", 
+                              "35-54", 
+                              "55-74", 
+                              "75+"))
+
+# Making generation ordinal
+data$generation <- factor(data$generation, 
+                   ordered = T, 
+                   levels = c("G.I. Generation", 
+                              "Silent",
+                              "Boomers", 
+                              "Generation X", 
+                              "Millenials", 
+                              "Generation Z"))
+
+data <- as_tibble(data)
+```
+
+
+## 2.4 Outliers
+
+Detecting and addressing outliers is a fundamental step in data preprocessing, especially for linear regression models that are significantly influenced by outliers.
+
+Several methods exist to identify outliers, including:
+
+* **Visual Inspection** using Boxplots and Scatterplots: These plots offer a straightforward way to visually identify outliers. Boxplots are particularly useful for univariate analysis, while scatterplots facilitate bivariate analysis.
+
+* **Z-Score Method**: This technique labels any data point that deviates more than three standard deviations from the mean as an outlier. However, this method is only effective when the data is completely or nearly normally distributed. Hence, it's not ideal for skewed data.
+
+* **Tukey's Fences**:It is calculated by creating a “fence” boundary a distance of 1.5 IQR beyond the 1st and 3rd quartiles. Any data beyond these fences are considered to be outliers.This method provides a robust mechanism to spot outliers, even in skewed distributions.
+
+Once outliers are identified, we can employ several strategies to handle them, such as:
+
+* **Rescaling and Transforming Data**: Techniques such as log transformation, square root transformation, or cube root transformation can help lessen the data skewness and mitigate the effects of outliers.
+
+* **Truncation or Winsorization**: This method caps the outliers at a specified percentile of the data, like the 5th or 95th percentile.
+
+* **Removing Outliers**: In extreme cases, when we are confident that an outlier arises from incorrect data entry or measurement, we might decide to eliminate these values to avoid their undue influence on our model. However, this method should be a last resort, as it might result in information loss and should be justified thoroughly.
+
+
+Let's begin by examining the distribution and range of our features to better understand the spread and dispersion of our data.
+
+```{r}
+summary(data)
+```
+
+### 2.4.1 Visualize Distribution of the Data
+
+```{r}
+
+# Set the overall layout for the combined plot
+par(mfrow = c(3, 4))
+par(mar = c(2, 2, 2, 2))  # Adjust the margins for each plot
+
+# for each column in the dataframe
+
+for(col in names(data)) {
+  # if it's a numeric column
+  if(is.numeric(data[[col]])) {
+    # create a histogram
+    hist(data[[col]], main=col, xlab=col, col = "#13527a", border = "#ebebeb", cex.main = 1)
+  }
+}
+
+```
+
+### 2.4.2 BoxPlots
+
+```{r}
+# Set the overall layout for the combined plot
+par(mfrow = c(2, 4))
+par(mar = c(2, 2, 2, 2))  # Adjust the margins for each plot
+
+# for each column in the dataframe
+
+for(col in names(data)) {
+  # if it's a numeric column
+  if(is.numeric(data[[col]])) {
+    # create a histogram
+    boxplot(data[[col]], main=col, xlab=col, col = "#ebebeb", border = "#13527a", cex.main = 1)
+  }
+}
+
+```
+From the above boxplots, it's evident that "suicides_no", "population", and "GDP_for_year" all exhibit a significant number of outliers. Additionally, "suicide_ratio" and "GDP_per_capita" also show a substantial number of outlier values.
+
+
+Our examination of the boxplots and histograms reveals a significant concentration of data within the 'suicide_no' and 'suicide_ratio' parameters, skewed towards zero. This high density around zero manifests as a long tail in the distribution towards the right.
+In order to address this skewness, we need to delve deeper into the records where 'suicide_no' is recorded as zero.
+
+
+```{r}
+# Define a common theme
+common_theme <- theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    legend.position = "none",
+    panel.grid.major = element_line(color = "grey", linewidth = 0.1),
+    panel.grid.minor = element_blank()
+  )
+
+# Define a common color
+common_color <- "steelblue"
+
+# Data for the first plot
+zero_suicides_data <- data %>%
+  filter(suicides_no == 0) %>%
+  group_by(age) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = age, y = count, fill=age)) +
+    geom_bar(stat = "identity") +
+    labs(x = "Age", y = "Count", 
+         title = "Zero Suicides by Age Group") +
+    common_theme
+
+# Data for the second plot
+age_plot <- data %>%
+  group_by(age) %>%
+  summarize(suicide_per_100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000) %>%
+  ggplot(aes(x = age, y = suicide_per_100k, fill = age)) + 
+  geom_bar(stat = "identity") + 
+  labs(title = "Global suicides per 100k, by Age",
+       x = "Age", 
+       y = "Suicides per 100k") +
+  common_theme +
+  scale_y_continuous(breaks = seq(0, 30, 1), minor_breaks = NULL) # Changed breaks for better visibility
+
+# Arrange the plots
+grid.arrange(age_plot, zero_suicides_data, ncol = 2)
+
+```
+Our observations suggest that a significant proportion of zero-suicide instances are within the 5-14 age bracket. The overall suicide average for this age group is notably low, generally under one.
+
+This age group, however, doesn't adequately represent the larger population. The reasons for suicide within this age bracket are likely to be fundamentally different from those of other groups, potentially influenced by unique causes.
+
+Given these considerations, we have opted to exclude the 5-14 age group from our data. This decision stems from the realization that this group exhibits distinctly different behaviors and is not representative of the broader population in the context of suicide rates.
+
+```{r}
+data <- data%>%
+  filter(age != '5-14')
+```
+
+```{r}
+dim(data)
+```
+
+### 2.4.3 Tukey's Fences
+
+As indicated by the histograms above, most of our data does not adhere to a normal distribution. To yield more specific results, we will initially employ Tukey's Fences method to identify the number of outliers in each feature.
+
+```{r}
+#check the number of outliers in each features
+
+# Define the outlier_count function
+Tukey_outlier_count <- function(col) {
+  q75 <- quantile(col, 0.75, na.rm= TRUE)
+  q25 <- quantile(col, 0.25, na.rm= TRUE)
+  iqr <- q75 - q25
+  min_val <- q25 - (iqr * 1.5)
+  max_val <- q75 + (iqr * 1.5)
+  outlier_count <- sum(col > max_val | col < min_val)
+  outlier_percent <- round(outlier_count / length(col) * 100, 2)
+  return(c(outlier_count, outlier_percent))
+}
+
+# Get numeric data
+numeric_data <- data[, sapply(data, is.numeric)]
+
+# Apply the function to numeric columns
+outliers <- sapply(numeric_data, Tukey_outlier_count)
+
+# Convert to dataframe
+outliers_df <- as.data.frame(t(outliers))
+colnames(outliers_df) <- c("Outlier_Count", "Outlier_Percent")
+
+# Print the result
+print(outliers_df)
+```
+
+### 2.4.4 Transformations 
+
+The results from the Tukey's method, consistent with our boxplot observations, reveal a significant proportion of outliers in the "suicides_no", "suicide_ratio", "population", and "GDP_for_year" data. In an attempt to reduce the impact of these outliers, we plan to enrich our dataset with additional columns, each representing log-transformed and square root-transformed values of these variables.
+
+However, we face a challenge with the "suicide_no" and "suicide_ratio" variables as they contain zero values, making it impossible to apply a straightforward log transformation. To circumvent this issue, we'll introduce an adjustment factor, a constant c=1, to all suicide numbers. Subsequently, we'll compute a new ratio and apply a log transformation to it. This approach ensures a smooth and successful transformation process.
+
+```{r}
+# Add a small constant to avoid undefined log values
+c <- 1
+
+data <- data %>%
+  mutate(new_suicides_no = suicides_no + c,
+         new_suicide_ratio = new_suicides_no / population,
+         log_population = log(population),
+         log_GDP_year = log(GDP_for_year),
+         log_GDP_capita = log(GDP_per_capita),
+         log_suicide_no = log(new_suicides_no),
+         log_suicide_ratio = log(new_suicide_ratio)
+         )
+```
+
+In our analysis, we opted for the natural logarithm for its ease of interpretation. While logarithmic transformations with different bases don't alter the distribution's form, they do have implications for how we interpret the coefficients in our model.
+
+With the natural logarithm (base e), coefficients in a model where both the predictor (x) and response (y) variables are log-transformed indicate the percentage change in y corresponding to a 1% change in x.
+
+On the other hand, if a base-10 logarithm were used in the same circumstances, each coefficient would represent the change in y associated with a 10% change in x.
+
+Therefore, by using the natural logarithm, we simplify the interpretation of our model's output, enabling more straightforward conclusions and discussions.
+
+```{r}
+data <- data %>%
+  mutate(sqrt_population = sqrt(population),
+         sqrt_GDP_year = sqrt(GDP_for_year),
+         sqrt_GDP_capita = sqrt(GDP_per_capita),
+         sqrt_suicide_no = sqrt(suicides_no),
+         sqrt_suicide_ratio = sqrt(suicide_ratio)
+         )
+```
+
+
+```{r}
+# Define the list of columns to be processed
+transformed_col = c("population","log_population", "sqrt_population",
+                    "GDP_for_year", "log_GDP_year", "sqrt_GDP_year", 
+                    "GDP_per_capita", "log_GDP_capita", "sqrt_GDP_capita" , 
+                    "suicides_no", "log_suicide_no", "sqrt_suicide_no",
+                    "suicide_ratio","log_suicide_ratio", "sqrt_suicide_ratio")
+
+# Apply the function to numeric columns
+transformed_data <- data[, transformed_col]
+transformed_outliers <- sapply(transformed_data, Tukey_outlier_count)
+
+# Convert to dataframe
+outliers_df <- as.data.frame(t(transformed_outliers))
+colnames(outliers_df) <- c("Outlier_Count", "Outlier_Percent")
+
+# Print the result
+print(outliers_df)
+```
+
+
+```{r}
+
+# Set the overall layout for the combined plot
+par(mfrow = c(3, 4))
+par(mar = c(2, 2, 2, 2))  # Adjust the margins for each plot
+
+# for each column in the dataframe
+
+for(col in names(data)) {
+  # if it's a numeric column
+  if(is.numeric(data[[col]])) {
+    # create a histogram
+    hist(data[[col]], main=col, xlab=col, col = "#13527a", border = "#ebebeb", cex.main = 1)
+  }
+}
+```
+
+Upon applying the log transformation, we noticed a remarkable decrease in the number of outliers. Moreover, the transformed data showed a tendency towards a more normal distribution, indicating the effectiveness of the transformation.
+
+With the data distribution now less skewed and more akin to a normal distribution, we leveraged the Z-score method to further quantify the remaining outliers in each column. This allowed us a more precise examination of the data spread and outlier prevalence.
+
+```{r}
+#data = subset(data, select = -c(sqrt_population,
+#                                sqrt_GDP_year,
+#                                sqrt_GDP_capita,
+#                                sqrt_suicide_no,
+#                                sqrt_suicide_ratio))
+```
+
+
+
+### 2.4.5 Z_Score
+
+Next, we employ the Z-Score method to identify potential outliers within each feature. To do this, we'll establish upper and lower bounds, beyond which a data point will be classified as an outlier. The calculations for these boundaries are as follows:
+
+Upper limit: Mean + (3 * Standard Deviation)
+Lower limit: Mean - (3 * Standard Deviation)
+
+This method is based on the principle that for a normally distributed dataset, about 99.7% of data falls within three standard deviations from the mean. Hence, any data point beyond this range can be considered an outlier.
+
+```{r}
+Z_Score <- function(col){
+  return((col - mean(col)) / sd(col))
+}
+
+Z_outlier_count <- function(col) {
+  Upper_limit = mean(col) + (3 * sd(col))
+  Lower_limit = mean(col) - (3 * sd(col))
+  outlier_count <- sum(col > Upper_limit| col < Lower_limit)
+  outlier_percent <- round(outlier_count / length(col) * 100, 2)
+  return(c(outlier_count, outlier_percent))
+}
+
+# Get numeric data
+numeric_data <- data[, sapply(data, is.numeric)]
+
+# Apply the function to numeric columns
+outliers <- sapply(numeric_data, Z_outlier_count)
+
+# Convert to dataframe
+outliers_df <- as.data.frame(t(outliers))
+colnames(outliers_df) <- c("Outlier_Count", "Outlier_Percent")
+
+# Print the result
+print(outliers_df)
+```
+ 
+
+
+
+### 2.4.6 Exploring Outliers
+
+In our project, "suicide_ratio" is the key variable we aim to predict using linear regression. It is important to acknowledge that linear regression models are particularly susceptible to the influence of outliers. Therefore, it is essential to adequately address and manage any outliers present in the "suicide_ratio" variable, to ensure our model's accuracy and reliability. 
+
+let's explore outliers in suicide ratio and check if there is any pattern in them. we use tukey's fence dtected outliers.(to be edited)
+
+```{r}
+# Calculate IQR and fences
+Q1 <- quantile(data$suicide_ratio, 0.25)
+Q3 <- quantile(data$suicide_ratio, 0.75)
+IQR <- Q3 - Q1
+
+lower_fence <- Q1 - 1.5 * IQR
+upper_fence <- Q3 + 1.5 * IQR
+
+# Filter outliers
+suicide_outliers <- data %>% 
+  filter(suicide_ratio < lower_fence | suicide_ratio > upper_fence)
+
+```
+
+```{r}
+summary(data)
+```
+
+```{r}
+summary(suicide_outliers)
+```
+The analysis shows that the top six countries with outlier suicide ratios are the Russian Federation, Kazakhstan, Ukraine, Lithuania, Hungary, and Belarus. Intriguingly, these nations are not only geographically proximate, but also share cultural and historical links. This observation may imply potential regional trends or shared socio-economic factors influencing the elevated suicide ratios. 
+
+Furthermore, a striking detail emerges from the outliers: nearly all, or 96.7%, are men. This finding indicates a significantly higher incidence of extreme suicide ratios among men.
+
+```{r}
+dim(suicide_outliers)
+```
+
+
+Due to the nature of our data, and the analysis we performed we believe that removing outliers or applying trunication(Winsorization) will cause information loss. so we keep the outliers for EDA.and we will try different methods on modeling the data to see which perform the best on our data. these are the methods we will try:
+1. removing detected outliers with both Tukey's Fence and Z_score method. With removing outliers 
+However, this can be risky because it assumes that the outliers are not informative and may lead to biased estimates. 
+
+2. Robust Regression Methods: Given the number of outliers and their potential influence on the model, a robust regression method might be a good choice. These methods are less sensitive to outliers and can often provide better predictive performance when outliers are present.
+
+3. Other Machine learning models which are less sensetive to outliers. (to be edited )
+
+
+# 3. Explore Data
+
+In this forthcoming section, we dive into the exploration of our dataset, distinguishing variables into four distinct categories.
+
+Firstly, we have 'year' which falls under **time-dependent variables**, mapping the temporal evolution of our data.
+
+Secondly, we have a set of **geographical and meteorological variables**. These include 'continent', 'country', 'population', and a range of temperature parameters (minimum, maximum, average) alongside their transformations, offering us insights into regional and environmental influences.
+
+Our third category brings together **social and economic variables** such as 'life expectancy', 'GDP', and 'GDP per capita'. These, along with their respective transformations, capture the socio-economic backdrop against which we observe our data.
+
+Lastly, our fourth category comprises **demographic variables**, namely 'sex' and 'age', allowing us to examine the influence of these vital demographics on our data.
+
+Moreover, we have identified three potential target variables for our study: 'suicide_ratio', 'log_suicide_ratio', and 'sqrt_suicide_ratio'. Of these, 'log_suicide_ratio' has been found to be highly effective in minimizing the impact of outliers. Yet, our exploration won't be limited to it. We aim to thoroughly investigate the impact of all variables on each potential target until we embark on the modeling phase, where we will select the most suitable target variable for our predictive model.
+
+
+```{r}
+glimpse(data)
+```
+
+```{r}
+column_name <- colnames(data)
+```
+
+## 3.1  Time-Dependent 
+
+
+```{r}
+# the global rate over the time period will be useful:
+global_average <- (sum(as.numeric(data$suicides_no)) / sum(as.numeric(data$population))) * 100000
+
+data %>%
+  group_by(year) %>%
+  summarize(population = sum(population), 
+            suicides = sum(suicides_no), 
+            suicides_per_100k = (suicides / population) * 100000) %>%
+  ggplot(aes(x = year, y = suicides_per_100k)) + 
+  geom_line(col = "red", linewidth = 1) + 
+  geom_point(col = "red", size = 2) + 
+  geom_hline(yintercept = global_average, linetype = 2, color = "grey35", linewidth = 1) +
+  labs(title = "Global Suicides (per 100k)",
+       subtitle = "Trend over time, 1985 - 2015.",
+       x = "Year", 
+       y = "Suicides per 100k") + 
+  scale_x_continuous(breaks = seq(1985, 2015, 2)) + 
+  scale_y_continuous(breaks = seq(10, 20))
+```
+The plot above yields several insightful observations:
+
+* The highest suicide rate recorded was 18.7 deaths per 100k population, observed in 1995.
+* This rate has seen a consistent decrease, falling to 13.5 per 100k population by 2015, which translates to a significant reduction of about 27%.
+* Presently, the rates are gradually regressing towards the figures prevalent prior to the 1990s.
+
+However, a crucial aspect to remember is that the data available from the 1980s is relatively scarce, thus making it difficult to conclusively state whether these rates were an accurate reflection of the global suicide trends during that period.
+
+
+### 3.1.1 Why did people killed themselves in 1995?
+
+```{r}
+data_95 <- data %>%
+  filter(year == 1995) %>%
+  group_by(country) %>%
+  summarize(population = sum(population), 
+            suicides = sum(suicides_no), 
+            suicides_per_100k = (suicides / population) * 100000)
+
+data_95 <- data_95 %>%
+  arrange(desc(suicides_per_100k))
+
+head(data_95)
+```
+
+During our exploration of outliers, we observed that Eastern European countries have significantly higher suicide rates compared to other nations. In particular, it appears that a substantial number of suicides in 1995 were reported in Russia.
+
+```{r}
+data_without_ru <- data %>%
+  filter(country != "Russian Federation") %>%
+  group_by(year) %>%
+  summarize(population = sum(population), 
+            suicides = sum(suicides_no), 
+            suicides_per_100k = (suicides / population) * 100000)
+
+
+yearly_data <- data %>%
+  group_by(year) %>%
+  summarize(population = sum(population), 
+            suicides = sum(suicides_no), 
+            suicides_per_100k = (suicides / population) * 100000)
+
+data_without_ru <- data_without_ru %>%
+  mutate(inclusion = "Without Russia")
+
+yearly_data <- yearly_data %>%
+  mutate(inclusion = "With Russia")
+
+combined_data <- bind_rows(data_without_ru, yearly_data)
+
+ggplot(combined_data, aes(x = year, y = suicides_per_100k, color = inclusion)) +
+  geom_line() +
+  labs(
+    title = 'Number of Suicides for every 100k people', 
+    x = 'Year', 
+    y = 'Suicide Ratio per 100k',
+    color = "Country Inclusion"
+  ) +
+  theme(legend.position = "right") +
+  scale_color_manual(values = c("Without Russia" = "blue", "With Russia" = "red"))
+```
+The significant increase in suicide rates observed in Russia in 1995 can be attributed to a combination of several factors, each contributing to an overall sense of despair and instability within the population:
+
+**Economic Crisis**: The period marked Russia's challenging transition from a centrally planned economy to a free-market system. This shift resulted in substantial economic turmoil characterized by high unemployment rates, rampant inflation, and general economic uncertainty. As numerous studies have indicated, such economic hardships can greatly increase stress levels within the population, thereby leading to higher suicide rates.
+
+**Political Instability**: The dissolution of the Soviet Union in 1991 precipitated a series of radical political and societal changes. The ensuing uncertainty and the resultant feeling of insecurity may have exacerbated the already volatile situation, thereby contributing to the rise in suicide rates.
+
+**Rise in Alcoholism**: During this period, Russia experienced an increase in alcohol abuse, a problem that has historically been a challenge for the country. A well-established body of research shows a strong correlation between alcohol abuse and suicide rates. The spike in alcoholism during this time might have, therefore, been a significant contributor to the suicide rates [links](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1642767/).
+
+It is essential to note that while these factors are distinct, they are interrelated and likely exacerbated each other's effects on the population's mental health. 
+
+
+
+
+## 3.2 Geographical and Meteorological
+
+
+
+
+### 3.2.1 Population
+
+#### 3.2.1.1 Univariate Analysis
+
+```{r}
+data$scaled_population <- (data$population - min(data$population))/(max(data$population)-min(data$population))
+data$scaled_log_population <- (data$log_population - min(data$log_population)) / (max(data$log_population) - min(data$log_population))
+```
+
+
+```{r}
+library(gridExtra)
+
+# Original Population
+p1 <- ggplot(data, aes(population)) +
+  geom_histogram(binwidth=1000, fill="skyblue", color="black") +
+  labs(title = "Histogram of Population",
+       x = "",
+       y = "Count")
+
+p2 <- ggplot(data, aes(x = "", y = population)) +
+  geom_boxplot(fill="lightgreen", color="black") +
+  labs(title = "Box Plot of Population",
+       x = "",
+       y = "")
+
+# Scaled Population
+p3 <- ggplot(data, aes(scaled_population)) +
+  geom_histogram(binwidth=0.01, fill="skyblue", color="black") +
+  labs(title = "Histogram of Scaled Population",
+       x = "",
+       y = "Count")
+
+p4 <- ggplot(data, aes(x = "", y = scaled_population)) +
+  geom_boxplot(fill="lightgreen", color="black") +
+  labs(title = "Box Plot of Scaled Population",
+       x = "",
+       y = "")
+
+# Scaled Log Population
+p5 <- ggplot(data, aes(scaled_log_population)) +
+  geom_histogram(binwidth=0.01, fill="skyblue", color="black") +
+  labs(title = "Histogram of Scaled Log Population",
+       x = "",
+       y = "Count")
+
+p6 <- ggplot(data, aes(x = "", y = scaled_log_population)) +
+  geom_boxplot(fill="lightgreen", color="black") +
+  labs(title = "Box Plot of Scaled Log Population",
+       x = "",
+       y = "")
+
+# Arrange the plots in a grid
+grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 2)
+
+```
+From these visualizations, we can observe that the distribution of the population variable becomes significantly less skewed after applying both min-max scaling and a log transformation. The resulting scaled log population appears more normally distributed and shows fewer outliers compared to the original and scaled population. Therefore, using the 'scaled_log_population' variable in our analyses should yield more robust results.
+
+
+#### 3.2.1.2 Bivariate Analysis
+
+In this section, we investigate the correlation between our candidate target variables and scaled_log_population. Since our suicide_ratio variable was derived from the ratio of suicide_no to population, our analysis focuses on the relationship between scaled_log_population and the three transformations of suicide_no: namely, suicide_no, log_suicide_no, and sqrt_suicide_no.
+
+```{r}
+data_long <- data %>%
+  select(scaled_log_population, suicides_no, log_suicide_no, sqrt_suicide_no) %>%
+  pivot_longer(cols = -scaled_log_population, names_to = "variable", values_to = "value")
+
+ggplot(data_long, aes(x = scaled_log_population, y = value, color= "skyblue")) +
+  geom_point(size=0.2) +
+  facet_wrap(~variable, scales = "free_y") +
+  labs(x = "Scaled Log Population",
+       y = "Value",
+       title = "Scatterplot of Scaled Log Population vs. Target Variables") + 
+  theme(legend.position = "none") 
+
+```
+From these scatterplots, it appears that the relationship between scaled_log_population and log_suicide_no is more linear compared to the other variables. 
+
+
+```{r}
+# List of variables to calculate correlations with scaled_log_population
+vars <- c("suicides_no", "log_suicide_no", "sqrt_suicide_no")
+
+# Calculate correlations
+correlations <- purrr::map_dbl(vars, ~cor(data$scaled_log_population, data[[.]]))
+
+# Print correlations
+names(correlations) <- vars
+print(correlations)
+```
+
+Is it surprising that there is a high correlation between the transformation of population and suicide_no? Not at all!
+
+Our goal is to estimate the probability of an individual taking their own life, which we calculate by dividing the suicide_no by the population in each row. However, this means we cannot directly examine the relationship between suicide_ratio and population, as we use the population directly to calculate the ratio. Instead, we need to analyze the relationship between population and suicide_no for each row.
+
+When the population of each row increases, the probability of a higher suicide_no also tends to increase. However, this comparison may not be entirely accurate. Should we disregard population altogether? Before making that decision, let's address this question: Is there a relationship between a country's population and suicide_ratio? In other words, is the probability of an individual taking their own life higher in countries with a larger population?
+
+To explore this, we have stratified the population of each country into three categories (big, medium, and small) for each year. This allows us to examine whether there is a notable difference in suicide_ratio based on the size of the population.
+
+Before moving forward, let's create a dataframe that calculates the population of each country over the years.
+```{r}
+pop_data <- data %>%
+  group_by(year, country) %>%
+  summarize(population = sum(population, na.rm = TRUE), .groups = "drop")
+```
+
+We aim to establish thresholds for each year to classify countries into four categories: very small, small, medium, and large. It is important to identify natural gaps in the distribution of population for each country within a given year. It should be noted that a median-based approach is not suitable since it would result in three categories of equal size. Additionally, we need to compare the population of each country with the populations of other countries within the same year, as a country may not be densely populated at present but could experience a significant increase in population in the future.
+
+To accomplish this, we employ the Jenks natural breaks classification method for each year. This method aims to minimize the variance within classes while maximizing the variance between classes. It involves an iterative process that reallocates observations from one class to another until an optimal arrangement is achieved.
+
+```{r}
+# Load required library
+library(classInt)
+
+# Define a function to apply Fisher-Jenks method for binning
+fisher_jenks <- function(x) {
+  bins <- classIntervals(x, n = 5, style = "fisher")$brks
+  cut(x, breaks = bins, labels = c("Very_Small","Small", "Medium", "Large","Very_Large" ), include.lowest = TRUE)
+}
+
+# Add the new column to the data frame
+pop_data <- pop_data %>%
+  group_by(year) %>%
+  mutate(population_bine_jenks = fisher_jenks(population))
+
+# View the first few rows of the new data
+head(pop_data)
+```
+Now, let's examine the population categories we've created:
+
+```{r}
+# Tabulate the categories
+pop_distribution <- table(pop_data$population_bine_jenks)
+print(pop_distribution)
+```
+From the output, we notice that the category "Very Large" consists of only one country, the USA. To have more balanced categories, we'll combine the USA with the "Large" category and rename accordingly:
+
+
+```{r}
+# Adjust the categories
+pop_data <- pop_data %>%
+  mutate(population_bine_jenks = ifelse(population_bine_jenks == "Very_Large", "Large",
+                                        as.character(population_bine_jenks)))
+
+# Check the distribution after adjustment
+adjusted_pop_distribution <- table(pop_data$population_bine_jenks)
+print(adjusted_pop_distribution)
+```
+
+```{r}
+pop_data
+```
+
+
+
+```{r}
+# Join the population categories into our original data
+data<- data %>%
+  left_join(pop_data%>%
+  select(country,year,population_bine_jenks),by = c("year", "country"))
+```
+We also bin the population based on the median and compare its performance with the Jenks natural breaks classification method in our model.
+```{r}
+data_sum <- data %>%
+  group_by(country, year) %>%
+  summarise(population = sum(population))
+
+thresholds <- quantile(data_sum$population, probs = c(0.25, 0.5, 0.75))
+
+# Assign each country-year pair to a population category
+data_binned <- data_sum %>%
+  mutate(
+    population_bine_median = case_when(
+      population <= thresholds[1] ~ "Very_Small",
+      population > thresholds[1] & population <= thresholds[2] ~ "Small",
+      population > thresholds[2] & population <= thresholds[3] ~ "Medium",
+      TRUE ~ "Large"
+    )
+  )
+
+data <- data %>%
+  left_join(data_binned%>%
+  select(country,year,population_bine_median),by = c("year", "country"))
+```
+In this step, we will explore the relationship between log_suicide_ratio (chosen because it follows a normal distribution) and population_binde_jenks.
+
+Let's start by examining the descriptive statistics for both log_suicide_ratio and suicide_ratio.
+
+```{r}
+data %>%
+  group_by(population_bine_jenks) %>%
+  summarise(
+    mean_suicide_ratio = mean(log_suicide_ratio, na.rm = TRUE),
+    median_suicide_ratio = median(log_suicide_ratio, na.rm = TRUE),
+    min_suicide_ratio = min(log_suicide_ratio, na.rm = TRUE),
+    max_suicide_ratio = max(log_suicide_ratio, na.rm = TRUE)
+  )
+```
+```{r}
+data_grouped <- data %>%
+  group_by(population_bine_jenks) %>%
+  summarise(
+    suicide_ratio = sum(suicides_no) / (sum(population) )
+  )
+
+ggplot(data_grouped, aes(x = population_bine_jenks, y = suicide_ratio, fill = population_bine_jenks)) +
+  geom_bar(stat = "identity", color = "black") +
+  labs(x = "Population Bin", y = "Suicide Ratio", title = "Suicide Ratio for each Population Bin") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none") +
+  scale_fill_brewer(palette = "Set2")
+```
+The above plot suggests that the suicide ratio in Large countires is much higher. Now we use statistical tests to see if this difference is statisticaly siginifticant. Since we have more than two samples we can use ANOVA.
+It's important to keep in mind that ANOVA makes several assumptions, including that the residuals are normally distributed, that the variances are equal across groups, and that the observations are independent. We should check these assumptions before interpreting the results.
+
+
+```{r}
+# Fit the model
+pop_anova <- aov(log_suicide_ratio ~ population_bine_jenks, data = data)
+
+# Run the ANOVA
+anova_result <- anova(pop_anova)
+
+# Print the result
+print(anova_result)
+```
+
+Testing Normality of Residuals Assumption for ANOVA:
+```{r}
+# Create a data frame for residuals
+residuals_df <- data.frame(residuals = residuals(pop_anova))
+
+# Create histogram of residuals
+hist_plot <- ggplot(residuals_df, aes(x = residuals)) +
+  geom_histogram(fill = 'steelblue', color = 'black', bins = 30) +
+  theme_minimal() +
+  labs(x = "Residuals", y = "Frequency",
+       title = "Histogram of Residuals")
+
+# Create Q-Q plot of residuals
+qq_plot <- ggplot(residuals_df, aes(sample = residuals)) +
+  geom_qq(color = 'steelblue') +
+  geom_qq_line(color = 'red') +
+  theme_minimal() +
+  labs(title = "Normal Q-Q Plot",
+       x = "Theoretical Quantiles",
+       y = "Sample Quantiles")
+
+# Arrange the plots side by side using the gridExtra package
+library(gridExtra)
+grid.arrange(hist_plot, qq_plot, ncol = 2)
+```
+
+Testing Homogeneity of Variances Assumption for ANOVA:
+```{r}
+leveneTest(log_suicide_ratio ~ age, data = data)
+```
+```{r}
+bartlett.test(log_suicide_ratio ~ age, data = data)
+```
+The small p-values in our tests lead us to reject the null hypothesis, which posits that the variances are equivalent across different groups. This implies that the results from an ANOVA test may not be reliable in our case. Therefore, we turn to the Kruskal-Wallis test.
+
+The Kruskal-Wallis test is a non-parametric technique that assesses whether samples originate from the same distribution. It is suitable for comparing two or more independent samples of equal or differing sample sizes, effectively extending the Mann-Whitney U test, which is utilized for comparing only two groups.
+
+Unlike the one-way ANOVA and t-tests, the Kruskal-Wallis test does not require the residuals to be normally distributed. Consequently, it can be used with continuous data that doesn't follow a normal distribution. However, akin to ANOVA, it evaluates whether the mean ranks of the groups are different, not the means themselves.
+
+The assumptions for the Kruskal-Wallis test are:
+
+Independence: Observations within and between each sample should be independent, implying that one observation's presence or absence doesn't influence another observation's presence or absence.
+
+Ordinal Data: The dependent variable must be ordinal at a minimum, meaning that the observations can be ordered. It should be possible to say that one observation is greater than, equal to, or less than another observation.
+
+Shape of Distribution: Although the Kruskal-Wallis test doesn't require a specific data distribution like ANOVA does, it assumes that the shape of the distribution is identical for each group. While groups may have differing medians, their distribution's overall shape should be the same.
+
+For our data, we assume independence. Our 'population_bin' variable is ordinal, thereby fulfilling the second assumption. To verify the third assumption, we need to evaluate the distribution shapes via plots.
+
+```{r}
+# Histogram
+ggplot(data, aes(x =log_suicide_ratio)) +
+  geom_histogram(binwidth = 1) +
+  facet_wrap(~ population_bine_jenks)
+
+# Density plot
+ggplot(data, aes(x = log_suicide_ratio)) +
+  geom_density() +
+  facet_wrap(~ population_bine_jenks)
+
+# Q-Q plot
+ggplot(data, aes(sample = log_suicide_ratio)) +
+  stat_qq() +
+  facet_wrap(~ population_bine_jenks)
+```
+
+```{r}
+kruskal.test(log_suicide_ratio ~ population_bine_jenks, data = data)
+```
+The result of the Kruskal-Wallis test aligns with that of the ANOVA. The obtained p-value is significantly small, indicating that the suicide rate differs significantly among different population categories.
+
+
+```{r}
+#Factorizing our two new column population_bine_jenks and population_bine_median
+
+data$population_bine_jenks <- factor(data$population_bine_jenks, 
+                   ordered = T, 
+                   levels = c("Very_Small",
+                              "Small",
+                              "Medium",
+                              "Large"))
+data$population_bine_median <- factor(data$population_bine_median, 
+                   ordered = T, 
+                   levels = c("Very_Small",
+                              "Small",
+                              "Medium",
+                              "Large"))
+```
+
+
+### 3.2.2 Country and Continent
+
+#### 3.2.2.1 Univariate Analysis
+
+```{r}
+# Count the number of observations for each country
+country_counts <- data %>% 
+  group_by(country) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count))
+
+# Create the bar plot
+ggplot(country_counts, aes(x = reorder(country, count), y = count)) +
+  geom_bar(stat = "identity", fill = "steelblue", color = "black") +
+  labs(x = "Country", y = "Number of Rows", title = "Number of Rows for Each Country") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 15), 
+        axis.title.y = element_text(size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.text.x = element_blank()) # Remove country names
+```
+```{r}
+# Join the data to a map
+map_data <- joinCountryData2Map(country_counts, joinCode = "NAME", nameJoinColumn = "country")
+
+# Set margins
+par(mar = c(0, 0, 1, 0))
+
+# Plot the map
+mapCountryData(map_data, 
+               nameColumnToPlot = "count", 
+               mapTitle = "Number of Rows for each Country", 
+               colourPalette = "blues",  # change color palette here
+               oceanCol = "lightblue", 
+               missingCountryCol = "grey65", 
+               catMethod = "pretty")
+```
+
+```{r}
+# Get the unique countries per continent in the data
+continent_count <- data %>%
+  group_by(continent) %>%
+  summarise(num_countries_data = n_distinct(country))
+
+# Actual country count per continent
+actual_count <- data.frame(
+  continent = c("Africa", "Asia", "Europe", "Americas", "Oceania"),
+  num_countries_actual = c(54, 48, 44, 35, 14)  # replace with actual numbers
+)
+
+# Merge the two data frames
+continent_count <- merge(continent_count, actual_count, by = "continent")
+
+# Convert to long format for plotting
+continent_count_long <- continent_count %>%
+  pivot_longer(cols = -continent, 
+               names_to = "category", 
+               values_to = "count")
+
+# Create a bar plot
+# Then, create a bar plot
+ggplot(continent_count_long, aes(x = continent, y = count, fill = category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Continent", y = "Number of Countries",
+       title = "Actual Countries vs Countries in Data per Continent") +
+  scale_fill_discrete(name = "", labels = c("Number of Countries in Our Data", "Actual Number of Countries")) +
+  theme_minimal()
+```
+The presented plots reveal that we have a limited number of samples from Africa, which should be taken into consideration when interpreting the results for this region. Additionally, it is important to note that our data for Asia is also relatively sparse, which may impact the robustness of any conclusions drawn for this continent.
+
+#### 3.2.2.2 Bivariate Analysis
+
+```{r}
+country <- data %>%
+  group_by(country, continent) %>%
+  summarize(n = n(), 
+            suicide_per_100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000,
+            .groups="drop") %>%
+  arrange(desc(suicide_per_100k))
+
+country$country <- factor(country$country, 
+                          ordered = T, 
+                          levels = rev(country$country))
+
+ggplot(country, aes(x = country, y = suicide_per_100k, fill = continent)) + 
+  geom_bar(stat = "identity") + 
+  geom_hline(yintercept = global_average, linetype = 2, color = "grey35", size = 1) +
+  labs(title = "Global suicides per 100k, by Country",
+       x = "Country", 
+       y = "Suicides per 100k", 
+       fill = "Continent") +
+  #coord_flip() +
+  scale_y_continuous(breaks = seq(0, 45, 2)) + 
+  theme(
+  legend.position = "top",
+  legend.key.size = unit(0.25, "cm"),
+  plot.title = element_text(hjust = 0.5),
+  axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 1, size= 4),
+  #axis.line.x = element_line(inherit.blank = TRUE)
+  ) 
+```
+Lithuania’s rate has been highest by a large margin: > 44 suicides per 100k (per year)
+
+```{r}
+country <- data %>%
+  group_by(country) %>%
+  summarize(suicide_per_100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000,
+            .groups = "drop")
+
+countrydata <- joinCountryData2Map(country, joinCode = "NAME", nameJoinColumn = "country")
+
+par(mar=c(0, 0, 2, 0)) # margins
+
+mapCountryData(countrydata, 
+nameColumnToPlot="suicide_per_100k", 
+mapTitle="Sucide per 100k across the Globe", 
+colourPalette = "heat", 
+oceanCol="lightblue", 
+missingCountryCol="grey65", 
+catMethod = "pretty")
+```
+```{r}
+mapCountryData(countrydata, 
+nameColumnToPlot="suicide_per_100k", 
+mapTitle="Suicides per 100k in Eurasia", 
+mapRegion = "eurasia", 
+colourPalette = "heat", 
+oceanCol="lightblue", 
+missingCountryCol="grey65", 
+addLegend = FALSE, 
+catMethod = "pretty")
+```
+It's essential to be aware of our data's limitations. Specifically, we're missing a significant amount of information for Africa and Asia. On top of that, eight countries were excluded due to lack of sufficient data.
+
+Therefore, our analyses, whether on a global or continent level, might not provide a fully accurate picture. We're essentially trying to make sense of a puzzle with missing pieces.
+
+Lastly, when comparing suicide rates between different countries, it's crucial to consider that what is recorded as a suicide can vary by country. The reliability of suicide reporting can also influence our results.
+
+So, even though our analysis can help identify some trends, we must keep these caveats in mind when interpreting our findings.
+
+Due to the limited availability of data from Africa, we have excluded this continent from the current analysis.
+```{r}
+
+data_continent <- data %>% filter(continent != "Africa")
+
+# Function to calculate suicide rate per 100k
+calculate_suicide_rate <- function(suicides_no, population) {
+  (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000
+}
+
+# Calculating suicide rates by continent
+continent <-data_continent %>%
+  group_by(continent) %>%
+  summarize(suicide_per_100k = calculate_suicide_rate(suicides_no, population)) %>%
+  arrange(suicide_per_100k)
+
+
+continent_plot <- ggplot(continent, aes(x = continent, y = suicide_per_100k, fill = continent)) + 
+  geom_bar(stat = "identity") + 
+  labs(title = "Suicide Rates per 100k by Continent",
+       x = "Continent", 
+       y = "Suicides per 100k", 
+       fill = "Continent") +
+  theme(legend.position = "none") + 
+  scale_y_continuous(breaks = seq(0, 20, 1), minor_breaks = F)
+print(continent_plot)
+```
+Our preliminary analysis suggests that Europe appears to have a higher suicide rate compared to other continents. To further substantiate this observation, we should validate it with rigorous statistical tests. After all, our dataset is merely a sample and doesn't necessarily represent the whole population.
+
+Hence, we need to investigate if the observed differences are statistically significant.
+
+Our null hypothesis (H0) states that the mean suicide rates are identical across all continents over the 30-year span.
+
+On the other hand, our alternative hypothesis (H1) asserts that at least one continent has a distinct mean suicide rate compared to the others.
+
+We set our significance level at 0.05 for these tests.
+
+For comparison, we'll initially employ the ANOVA test. If our data does not satisfy the assumptions required for ANOVA, we'll resort to the non-parametric Kruskal-Wallis test. 
+
+```{r}
+continent_anova <- aov(log_suicide_ratio ~ continent, data = data_continent)
+
+# Run the ANOVA
+anova_result <- anova(continent_anova)
+
+# Print the result
+print(anova_result)
+```
+```{r}
+kruskal.test(log_suicide_ratio ~ continent, data = data_continent)
+```
+The p-values derived from both tests are significantly small, leading us to reject the null hypothesis. Thus, we can infer that at least one continent has a distinctive suicide rate. However, the ANOVA test does not provide insights about which specific continent diverges, nor does it indicate the extent of this difference.
+
+To delve into these specifics, we'll utilize the Tukey's Honest Significant Difference (HSD) post-hoc test. This test will facilitate the identification of groups with significantly different means, providing a comprehensive understanding of our data.
+
+```{r}
+TukeyHSD(continent_anova)
+```
+Our initial hypothesis stands correct as the data reveals that Europe exhibits a higher suicide rate compared to other regions.
+Now, let's explore if different regions within Europe exhibit distinct patterns in terms of suicide rates.
+
+```{r}
+# Define a list of countries for each region
+data_europe <- data %>%
+  filter(continent == "Europe")
+
+northern <- c("Denmark", "Estonia", "Finland", "Iceland", "Ireland", "Latvia", "Lithuania", "Norway", "Sweden", "United Kingdom","Luxembourg")
+southern <- c("Greece", "Italy", "Portugal", "Spain","Malta")
+eastern <- c("Bulgaria", "Czech Republic", "Hungary", "Poland", "Romania", "Russian Federation", "Slovakia","Albania","Ukraine","Belarus","Montenegro","Croatia", "Serbia", "Slovenia")
+western <- c("Austria", "Belgium", "France", "Germany", "Netherlands", "Switzerland")
+
+
+# Add a new column 'region' based on the country
+data_europe$region <- case_when(
+  data_europe$country %in% northern ~ "Northern",
+  data_europe$country %in% southern ~ "Southern",
+  data_europe$country %in% eastern ~ "Eastern",
+  data_europe$country %in% western ~ "Western",
+  TRUE ~ NA_character_ # for countries not listed above
+)
+
+```
+
+
+```{r}
+# Group the data by region and calculate the average suicide rate per 100k and the number of unique countries
+region_data <- data_europe %>%
+  group_by(region) %>%
+  summarise(avg_suicide_rate_per100k = sum(suicides_no, na.rm = TRUE) / sum(population) * 1e5,
+            num_countries = n_distinct(country)) 
+
+# Create the bar plot
+ggplot(region_data, aes(x = reorder(region, -avg_suicide_rate_per100k), y = avg_suicide_rate_per100k, fill = region)) +
+  geom_col() +
+  scale_fill_brewer(palette = "Spectral") +
+  labs(x = "Region", y = "Average suicide rate per 100k", 
+       title = "Average Suicide Rates per 100k for Regions in Europe") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+The presented plot indicates that the suicide ratio in Eastern Europe is notably higher compared to other regions. This finding aligns with the observations made in the previous sections regarding the countries within this region.
+
+
+#### 3.2.2.3 Multivariate Analyisis
+
+Our goal is to understand the temporal trends in suicide rates for each country. Rather than creating visualizations for all 93 countries, we adopt a more streamlined approach by fitting a linear regression model to the data for each country. This allows us to identify patterns of increase or decrease in suicide rates over time.
+
+Specifically, we're interested in the 'year' coefficient in our linear models. This coefficient signifies the rate of change in suicide rates over time. To control for multiple comparisons, we only consider those countries with a corrected p-value less than 0.05.
+
+To summarize, we are identifying countries where there's a statistically significant linear trend in suicide rates over time. These trends are then rank-ordered based on their rate of change, providing a clear picture of where suicide rates are increasing or decreasing most rapidly.
+
+```{r}
+# Create a summary data frame, grouping by country and year
+country_year <- data %>%
+  group_by(country, year) %>%
+  summarize(suicides = sum(suicides_no), 
+            population = sum(population), 
+            suicide_per_100k = (suicides / population) * 100000, 
+            gdp_per_capita = mean(GDP_per_capita),
+            .groups = "drop")  # Prevents the warning about groups
+
+# Fit a linear model for each country, tidy the output, and filter for significant trends
+country_year_trends <- country_year %>%
+  nest(data = -country) %>%  # Use explicit naming to prevent warning
+  mutate(model = map(data, ~ lm(suicide_per_100k ~ year, data = .)),
+         tidied = map(model, broom::tidy)) %>%
+  unnest(cols = c(tidied))
+
+# Adjust p-values and filter for significant results
+country_year_sig_trends <- country_year_trends %>%
+  filter(term == "year") %>%
+  mutate(p.adjusted = p.adjust(p.value, method = "holm")) %>%
+  filter(p.adjusted < .05) %>%
+  arrange(estimate)
+
+# Make country an ordered factor
+country_year_sig_trends <- mutate(country_year_sig_trends, country = factor(country, ordered = TRUE, levels = country))
+```
+
+```{r}
+ggplot(country_year_sig_trends, aes(x=country, y=estimate, col = estimate)) + 
+  geom_point(stat='identity', size = 2) +
+  geom_hline(yintercept = 0, col = "grey", size = 1) +
+  scale_color_gradient(low = "green", high = "red") +
+  geom_segment(aes(y = 0, 
+                   x = country, 
+                   yend = estimate, 
+                   xend = country), size = 1) +
+  labs(title="Change per year (Suicides per 100k)", 
+       x = "Country", y = "Change Per Year (Suicides per 100k)") +
+  scale_y_continuous(breaks = seq(-2, 2, 0.2), limits = c(-1.5, 1.5)) +
+  theme(legend.position = "none",
+        axis.text.y = element_text(size= 5)) +
+  coord_flip()
+
+```
+Approximately half of the countries (48 out of 96) exhibit a linear change in suicide rates as time progresses. Among these 48 countries, 32 of them (about two-thirds) show a decreasing trend. Overall, this trend presents a positive picture. However, it is worth noting that the suicide rates in Guyana and Korea are a cause for concern as they display concerning patterns.
+
+
+
+```{r}
+### Lets look at those countries with the steepest increasing trends
+
+top12_increasing <- tail(country_year_sig_trends$country, 12)
+
+country_year %>%
+  filter(country %in% top12_increasing) %>%
+  ggplot(aes(x = year, y = suicide_per_100k, col = country)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") + 
+  facet_wrap(~ country) + 
+  theme(legend.position = "none") + 
+  labs(title="12 Steepest Increasing Trends", 
+       subtitle="Of countries with significant trends (p < 0.05)", 
+       x = "Year", 
+       y = "Suicides per 100k")
+```
+The historical data for Guyana raises concerns due to a seemingly improbable jump in the suicide rate. While Guyana is known for having high suicide rates, the sudden increase observed appears questionable. It is possible that changes in how suicide cases were classified or reported could have influenced this significant surge in the dat
+
+```{r}
+continent_time <- data_continent %>%
+  group_by(year, continent) %>%
+  summarize(suicide_per_100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000, .groups="drop")
+
+continent_time$continent <- factor(continent_time$continent, ordered = T, levels = continent$continent)
+
+continent_time_plot <- ggplot(continent_time, aes(x = year, y = suicide_per_100k, col = factor(continent))) + 
+  facet_grid(continent ~ ., scales = "free_y") + 
+  geom_line() + 
+  geom_point() + 
+  labs(title = "Trends Over Time, by Continent", 
+       x = "Year", 
+       y = "Suicides per 100k", 
+       color = "Continent") + 
+  theme(legend.position = "none", title = element_text(size = 10)) + 
+  scale_x_continuous(breaks = seq(1985, 2015, 5), minor_breaks = F)
+print(continent_time_plot)
+```
+
+* Europe, having the highest suicide rate overall, has experienced a consistent decline of approximately 40% since 1995.
+* By 2015, Europe's suicide rate had converged with that of Asia and Oceania, showing similar levels.
+* In contrast to the global downward trend, Oceania and the Americas demonstrate an upward trajectory in suicide rates.
+This distinct pattern is concerning and calls for a thorough investigation into the underlying factors contributing to this rise, as well as the implementation of effective interventions.
+
+### 3.2.3 Tempurate
+We have three variables: avg_temp, max_temp, and min_temp. These variables represent the average, maximum, and minimum temperatures, respectively, for each country in each year.
+
+
+#### 3.2.3.1 Univariate Analysis
+
+```{r}
+library(gridExtra)
+# Function to create a list of plots for each variable
+create_plots <- function(variable_name, data) {
+  p1 <- ggplot(data, aes_string(variable_name)) +
+    geom_boxplot() 
+
+  p2 <- ggplot(data, aes_string(variable_name)) +
+    geom_histogram(bins = 30, fill = "steelblue", color = "white") 
+
+  p3 <- ggplot(data, aes_string(variable_name)) +
+    geom_density(fill = "steelblue")
+
+  list(p1, p2, p3)
+}
+
+# Create plots for each temperature variable
+avg_temp_plots <- create_plots("avg_temp", data)
+min_temp_plots <- create_plots("min_temp", data)
+max_temp_plots <- create_plots("max_temp", data)
+
+# Arrange the plots in a grid
+grid.arrange(grobs = c(avg_temp_plots, min_temp_plots, max_temp_plots), ncol = 3)
+
+```
+
+
+#### 3.2.3.2 Bivariate Analysis
+
+Before calculating the correlation between temperature variables and suicide ratio, it is important to remove extreme outliers from the dataset.
+
+
+```{r}
+library(gridExtra)
+library(knitr)
+
+# Function to process each temperature variable
+correlation_plots <- function(temp_var, data) {
+  
+  # Calculate and print the correlation before removing outliers
+  corr_before <- cor(data[[temp_var]], data$suicide_ratio, use = "complete.obs")
+  
+  # Calculate quartiles and IQR
+  Q1 <- quantile(data[[temp_var]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(data[[temp_var]], 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  
+  # Identify outliers
+  outliers <- data[[temp_var]] < (Q1 - 1.5 * IQR) | data[[temp_var]] > (Q3 + 1.5 * IQR)
+  
+  # Remove outliers
+  data_no_outliers <- data[!outliers, ]
+  
+  # Calculate and print the correlation after removing outliers
+  corr_after <- cor(data_no_outliers[[temp_var]], data_no_outliers$suicide_ratio, use = "complete.obs")
+  
+  # Create scatter plot with a regression line
+  plot <- ggplot(data_no_outliers, aes_string(x = temp_var, y = "suicide_ratio")) +
+    geom_point(color="skyblue", size=0.5) +
+    geom_smooth(method = lm, color = "pink") +
+    labs(x = paste("Temperature (", temp_var, ")", sep = ""), y = "Suicide Ratio", 
+         title = temp_var) +
+    theme_minimal()
+  
+  return(list(corr_before = corr_before, corr_after = corr_after, plot = plot))
+}
+
+# Call the function for each temperature variable
+result_avg_temp <- correlation_plots("avg_temp", data)
+result_min_temp <- correlation_plots("min_temp", data)
+result_max_temp <- correlation_plots("max_temp", data)
+
+# Combine the plots into a grid
+grid.arrange(result_avg_temp$plot, result_min_temp$plot, result_max_temp$plot, nrow=1, ncol=3)
+
+```
+
+```{r}
+# Combine the correlation results into a data frame and display as a table
+correlation_results <- data.frame(
+  Temperature_Variable = c("avg_temp", "min_temp", "max_temp"),
+  Correlation_Before = c(result_avg_temp$corr_before, result_min_temp$corr_before, result_max_temp$corr_before),
+  Correlation_After = c(result_avg_temp$corr_after, result_min_temp$corr_after, result_max_temp$corr_after)
+)
+
+print(correlation_results)
+```
+```{r}
+cor(data$min_temp,data$sqrt_suicide_ratio)
+```
+
+```{r}
+cor(data$min_temp,data$log_suicide_ratio)
+```
+It appears that the temperature variables exhibit a stronger correlation with the square root of the suicide ratio (sqrt_suicide_ratio). This observation is noteworthy and should be taken into account during further analysis.
+
+
+Now, similar to the population variable, let's bin the temperature variables. It is important to note that when using the Jenks method, we classify the temperatures for each year separately. This approach helps reduce the influence of temperature variations over the years and provides a more accurate assessment of the temperature categories.
+
+
+```{r}
+temp_data <- data %>%
+  group_by(year, country) %>%
+  summarize(temp = mean(avg_temp), .groups = "drop")
+
+```
+
+```{r}
+fisher_jenks <- function(x) {
+  bins <- classIntervals(x, n = 5, style = "fisher")$brks
+  cut(x, breaks = bins, labels = c("Freezing","Very_Cold", "Cold", "Warm","Hot" ), include.lowest = TRUE)
+}
+
+# Add the new column to the data frame
+temp_data <- temp_data %>%
+  group_by(year) %>%
+  mutate(avg_temp_bine_jenks = fisher_jenks(temp))
+
+# View the new data
+head(temp_data)
+```
+
+```{r}
+temp_data
+```
+
+```{r}
+table(temp_data$avg_temp_bine_jenks)
+```
+
+
+Considering the limited number of countries falling under the "Freezing" temperature category, it would be appropriate to combine the "Very Cold" and "Freezing" categories into a single category. This consolidation ensures that the temperature classification remains meaningful and representative despite the scarcity of data points in the "Freezing" category
+```{r}
+temp_data <- temp_data %>%
+  mutate(avg_temp_bine_jenks = ifelse(avg_temp_bine_jenks == "Freezing", "Very_Cold",
+                                      as.character(avg_temp_bine_jenks)))
+```
+
+```{r}
+table(temp_data$avg_temp_bine_jenks)
+```
+
+```{r}
+# lets join this dataset to original dataset 
+data<- data %>%
+  left_join(temp_data%>%
+  select(country,year,avg_temp_bine_jenks),by = c("year", "country"))
+```
+
+Now, let's compare the suicide ratio in each climate category.
+
+```{r}
+data_grouped <- data %>%
+  group_by(avg_temp_bine_jenks) %>%
+  summarise(
+  suicide_ratio = mean(suicide_ratio) )
+  
+ggplot(data_grouped, aes(x = avg_temp_bine_jenks, y = suicide_ratio, fill = avg_temp_bine_jenks)) +
+  geom_bar(stat = "identity", color = "black") +
+  labs(x = "Average temp Bin", y = "Suicide Ratio", title = "Suicide Ratio for each Climate Category") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none") +
+  scale_fill_brewer(palette = "Set2")
+```
+From the plots, it is evident that countries with hot and warm climates exhibit significantly lower suicide rates. Moreover, the plot suggests that we can simplify the climate categories into just two groups: "Warm" and "Not Warm" since the suicide rates in these two categories are similar.
+```{r}
+data <- data %>%
+  mutate(avg_temp_bine_jenks = ifelse(avg_temp_bine_jenks == "Hot", "Warm",
+                                      as.character(avg_temp_bine_jenks)))
+```
+
+```{r}
+data <- data %>%
+  mutate(avg_temp_bine_jenks = ifelse(avg_temp_bine_jenks == "Very_Cold", "Cold",
+                                      as.character(avg_temp_bine_jenks)))
+```
+
+We can apply the same procedure of analysis to the variables of maximum temperature and mean temperature as well.
+
+```{r}
+# MIN TEMP
+temp_data <- data %>%
+  group_by(year, country) %>%
+  summarize(temp = mean(min_temp), .groups = "drop")
+
+fisher_jenks <- function(x) {
+  bins <- classIntervals(x, n = 5, style = "fisher")$brks
+  cut(x, breaks = bins, labels = c("Freezing","Very_Cold", "Cold", "Warm","Hot" ), include.lowest = TRUE)
+}
+
+# Add the new column to the data frame
+temp_data <- temp_data %>%
+  group_by(year) %>%
+  mutate(min_temp_bine_jenks = fisher_jenks(temp))
+
+# since we have very low country for very_cold we unify very cold and cold also 
+temp_data <- temp_data %>%
+  mutate(min_temp_bine_jenks = ifelse(min_temp_bine_jenks == "Freezing", "Very_Cold",
+                                      as.character(min_temp_bine_jenks)))
+
+# Join to the data
+data<- data %>%
+  left_join(temp_data%>%
+  select(country,year,min_temp_bine_jenks),by = c("year", "country"))
+
+```
+
+```{r}
+data_grouped <- data %>%
+  group_by(min_temp_bine_jenks) %>%
+  summarise(
+  suicide_ratio = mean(suicide_ratio) )
+
+ggplot(data_grouped, aes(x = min_temp_bine_jenks, y = suicide_ratio, fill = min_temp_bine_jenks)) +
+  geom_bar(stat = "identity", color = "black") +
+  labs(x = "min temp Bin", y = "Suicide Ratio", title = "Suicide Ratio for each min temp Bin") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none") +
+  scale_fill_brewer(palette = "Set2")
+```
+
+```{r}
+data <- data %>%
+  mutate(min_temp_bine_jenks = ifelse(min_temp_bine_jenks == "Warm", "Hot", as.character(min_temp_bine_jenks)))
+```
+
+```{r}
+# Max Temp
+
+temp_data <- data %>%
+  group_by(year, country) %>%
+  summarize(temp = mean(max_temp))
+
+
+fisher_jenks <- function(x) {
+  bins <- classIntervals(x, n = 5, style = "fisher")$brks
+  cut(x, breaks = bins, labels = c("Freezing","Very_Cold", "Cold", "Warm","Hot" ), include.lowest = TRUE)
+}
+
+# Add the new column to the data frame
+temp_data <- temp_data %>%
+  group_by(year) %>%
+  mutate(max_temp_bine_jenks = fisher_jenks(temp))
+
+temp_data <- temp_data %>%
+  mutate(max_temp_bine_jenks = ifelse(max_temp_bine_jenks == "Freezing", "Very_Cold",
+                                      as.character(max_temp_bine_jenks)))
+
+data<- data %>%
+  left_join(temp_data%>%
+  select(country,year,max_temp_bine_jenks),by = c("year", "country"))
+```
+
+```{r}
+data_grouped <- data %>%
+  group_by(max_temp_bine_jenks) %>%
+  summarise(
+  suicide_ratio = mean(suicide_ratio) )
+
+ggplot(data_grouped, aes(x = max_temp_bine_jenks, y = suicide_ratio, fill = max_temp_bine_jenks)) +
+  geom_bar(stat = "identity", color = "black") +
+  labs(x = "max temp Bin", y = "Suicide Ratio", title = "Suicide Ratio for each max temp Bin") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none") +
+  scale_fill_brewer(palette = "Set2")
+  
+
+```
+
+```{r}
+data <- data %>%
+  mutate(max_temp_bine_jenks = ifelse(max_temp_bine_jenks == "Hot", "Warm", as.character(max_temp_bine_jenks)))
+```
+
+```{r}
+data <- data %>%
+  mutate(max_temp_bine_jenks = ifelse(max_temp_bine_jenks == "Very_Cold", "Cold", as.character(max_temp_bine_jenks)))
+```
+
+## 3.3 Social and Economical  
+
+### 3.3.1 GDP
+
+### 3.3.1.1 Univariate Analysis
+
+```{r}
+# Scale the GDP and log GDP variables
+data$scaled_GDP_for_year <- (data$GDP_for_year - min(data$GDP_for_year))/(max(data$GDP_for_year)-min(data$GDP_for_year))
+data$scaled_log_GDP_year <- (data$log_GDP_year - min(data$log_GDP_year)) / (max(data$log_GDP_year) - min(data$log_GDP_year))
+```
+
+
+```{r}
+library(gridExtra)
+# Plotting original GDP
+p1 <- ggplot(data, aes(GDP_for_year)) +
+  geom_histogram(binwidth=1000000000, fill="skyblue", color="black") +
+  labs(title = "Histogram of GDP_for_year",
+       x = "GDP_for_year",
+       y = "Count")
+
+p2 <- ggplot(data, aes(x = "", y = GDP_for_year)) +
+  geom_boxplot(fill="lightgreen", color="black") +
+  labs(title = "Box Plot of GDP_for_year",
+       x = "",
+       y = "GDP_for_year")
+
+# Plotting scaled GDP
+p3 <- ggplot(data, aes(scaled_GDP_for_year)) +
+  geom_histogram(binwidth=0.01, fill="skyblue", color="black") +
+  labs(title = "Histogram of scaled_GDP_for_year",
+       x = "scaled_GDP_for_year",
+       y = "Count")
+
+p4 <- ggplot(data, aes(x = "", y = scaled_GDP_for_year)) +
+  geom_boxplot(fill="lightgreen", color="black") +
+  labs(title = "Box Plot of scaled_GDP_for_year",
+       x = "",
+       y = "scaled_GDP_for_year")
+
+# Plotting scaled log GDP
+p5 <- ggplot(data, aes(scaled_log_GDP_year)) +
+  geom_histogram(binwidth=0.01, fill="skyblue", color="black") +
+  labs(title = "Histogram of scaled_log_GDP_year",
+       x = "scaled_log_GDP_year",
+       y = "Count")
+
+p6 <- ggplot(data, aes(x = "", y = scaled_log_GDP_year)) +
+  geom_boxplot(fill="lightgreen", color="black") +
+  labs(title = "Box Plot of scaled_log_GDP_year",
+       x = "",
+       y = "scaled_log_GDP_year")
+
+# Arrange the plots in a grid
+grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 2)
+
+```
+
+
+```{r}
+# Computing scaled and log-scaled GDP per capita
+data$scaled_GDP_per_capita <- (data$GDP_per_capita - min(data$GDP_per_capita)) / 
+                              (max(data$GDP_per_capita) - min(data$GDP_per_capita))
+
+data$scaled_log_GDP_capita <- (data$log_GDP_capita-min(data$log_GDP_capita))/
+                              (max(data$log_GDP_capita)-min(data$log_GDP_capita)) 
+```
+
+
+```{r}
+# Loading required library
+library(gridExtra)
+
+# Original GDP per Capita
+p1 <- ggplot(data, aes(GDP_per_capita)) +
+  geom_histogram(binwidth=1000, fill="skyblue", color="black") +
+  labs(title = "Histogram of GDP_per_Capita",
+       x = "GDP_per_Capita",
+       y = "Count")
+
+p2 <- ggplot(data, aes(x = "", y = GDP_per_capita)) +
+  geom_boxplot(fill="lightgreen", color="black") +
+  labs(title = "Box Plot of GDP_per_Capita",
+       x = "",
+       y = "GDP_per_Capita")
+
+# Scaled GDP per Capita
+p3 <- ggplot(data, aes(scaled_GDP_per_capita)) +
+  geom_histogram(binwidth=0.01, fill="skyblue", color="black") +
+  labs(title = "Histogram of Scaled GDP_per_Capita",
+       x = "Scaled GDP_per_Capita",
+       y = "Count")
+
+p4 <- ggplot(data, aes(x = "", y = scaled_GDP_per_capita)) +
+  geom_boxplot(fill="lightgreen", color="black") +
+  labs(title = "Box Plot of Scaled GDP_per_Capita",
+       x = "",
+       y = "Scaled GDP_per_Capita")
+
+# Scaled Log GDP per Capita
+p5 <- ggplot(data, aes(scaled_log_GDP_capita)) +
+  geom_histogram(binwidth=0.01, fill="skyblue", color="black") +
+  labs(title = "Histogram of Scaled Log GDP_per_Capita",
+       x = "Scaled Log GDP_per_Capita",
+       y = "Count")
+
+p6 <- ggplot(data, aes(x = "", y = scaled_log_GDP_capita)) +
+  geom_boxplot(fill="lightgreen", color="black") +
+  labs(title = "Box Plot of Scaled Log GDP_per_Capita",
+       x = "",
+       y = "Scaled Log GDP_per_Capita")
+
+# Arrange the plots in a grid
+grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 2)
+
+```
+
+### 3.3.1.2 Bivariate Analysis
+
+```{r}
+# Prepare the data in long format
+long_data <- data %>% 
+  select(scaled_log_GDP_year, suicide_ratio, log_suicide_ratio, sqrt_suicide_ratio) %>%
+  gather(key = "Variable", value = "Value", -scaled_log_GDP_year)
+
+# Create the plot
+ggplot(long_data, aes(x = scaled_log_GDP_year, y = Value)) +
+  geom_point(color = "skyblue", size=0.5) +
+  facet_wrap(~Variable, scales = "free", ncol = 3) +
+  ggtitle("Scatterplots of scaled_log_GDP_year vs. different variables") +
+  theme_minimal() +
+  ylab("") +
+  xlab("scaled_log_GDP_year")
+
+```
+
+```{r}
+cor(data$scaled_log_GDP_year, data$suicide_ratio)
+cor(data$scaled_log_GDP_year, data$log_suicide_ratio)
+cor(data$scaled_log_GDP_year, data$sqrt_suicide_ratio)
+```
+
+```{r}
+# Prepare the data in long format
+long_data <- data %>% 
+  select(scaled_log_GDP_capita, suicide_ratio, log_suicide_ratio, sqrt_suicide_ratio) %>%
+  gather(key = "Variable", value = "Value", -scaled_log_GDP_capita)
+
+# Create the plot
+ggplot(long_data, aes(x = scaled_log_GDP_capita, y = Value)) +
+  geom_point(color = "skyblue", size=0.5) +
+  facet_wrap(~Variable, scales = "free", ncol = 3) +
+  ggtitle("Scatterplots of scaled_log_GDP_year vs. different variables") +
+  theme_minimal() +
+  ylab("") +
+  xlab("scaled_log_GDP_year")
+
+```
+```{r}
+cor(data$scaled_log_GDP_capita, data$suicide_ratio)
+cor(data$scaled_log_GDP_capita, data$log_suicide_no)
+cor(data$scaled_log_GDP_capita, data$sqrt_suicide_ratio)
+cor(data$GDP_per_capita, data$suicide_ratio)
+cor(data$GDP_per_capita, data$log_suicide_no)
+cor(data$GDP_per_capita, data$sqrt_suicide_ratio)
+```
+I am surprised to discover that there seems to be no evident influence between GDP and suicide rates. Let's further investigate this matter.
+
+Considering the fact that GDP tends to increase over the years for countries, it becomes clear that GDP alone may not be a reliable indicator of a country's overall wealth or prosperity. 
+
+To gain deeper insights, we can introduce a new column called "gpd_pro_cap," which represents the share of each individual within each cluster divided by the sum of the GDP values for all countries. This calculation provides an estimation of the share of each individual within each cluster relative to the total GDP of the world during those respective years.By incorporating this new measure, we aim to capture the average share of each individual within each cluster in each year, accounting for the global GDP. This approach allows us to evaluate the relative economic position of individuals within their respective clusters over time.
+
+Let's analyze the correlation between the average GDP per capita and the years.
+```{r}
+# Compute average GDP_per_capita for each year
+df_yearly <- data %>%
+  group_by(year) %>%
+  summarise(avg_GDP_per_capita = mean(GDP_per_capita, na.rm = TRUE))
+
+correlation <- cor(df_yearly$year, df_yearly$avg_GDP_per_capita)
+print(correlation)
+```
+
+To address this issue, we can categorize GDP per capita similar to how we categorized the population variable earlier.
+
+```{r}
+gdp_data <- data %>%
+  group_by(year, country) %>%
+  summarize(income = mean(GDP_per_capita, na.rm = TRUE), .groups = "drop")
+```
+
+```{r}
+fisher_jenks <- function(x) {
+  bins <- classIntervals(x, n = 4, style = "fisher")$brks
+  cut(x, breaks = bins, labels = c("Very_Low_income","Low_income", "Medium_income", "High_income" ), include.lowest = TRUE)
+}
+
+# Add the new column to the data frame
+gdp_data <- gdp_data %>%
+  group_by(year) %>%
+  mutate(gdp_per_capita_bine_jenks = fisher_jenks(income))
+
+# View the new data
+table(gdp_data$gdp_per_capita_bine_jenks)
+```
+```{r}
+data<- data %>%
+  left_join(gdp_data%>%
+  select(country,year,gdp_per_capita_bine_jenks),by = c("year", "country"))
+```
+
+```{r}
+data_sum <- data %>%
+  group_by(country, year) %>%
+  summarise(GDP_per_capita = mean(GDP_per_capita), .groups = "drop")
+
+thresholds <- quantile(data_sum$GDP_per_capita, probs = c(0.25, 0.5, 0.75))
+
+# Assign each country-year pair to a population category
+data_binned <- data_sum %>%
+  mutate(
+    gdp_bine_median = case_when(
+      GDP_per_capita <= thresholds[1] ~ "Very_low_income",
+      GDP_per_capita > thresholds[1] & GDP_per_capita <= thresholds[2] ~ "low_income",
+      GDP_per_capita > thresholds[2] & GDP_per_capita <= thresholds[3] ~ "Medium_income",
+      TRUE ~ "high_income"
+    )
+  )
+
+data <- data %>%
+  left_join(data_binned%>%
+  select(country,year,gdp_bine_median),by = c("year", "country"))
+```
+By using the GDP binning method (gdp_bine_jenks) for each year, we mitigate the impact of the increasing GDP over time. Now, let's examine the suicide ratio within each GDP category to gain further insights.
+
+```{r}
+# Calculate the mean suicide_ratio for each group
+mean_suicide_ratio <- data %>%
+  group_by(gdp_per_capita_bine_jenks) %>%
+  summarise(mean_suicide_ratio = mean(suicide_ratio))
+
+# Print the mean_suicide_ratio dataframe
+print(mean_suicide_ratio)
+```
+
+
+```{r}
+# Plot the mean_suicide_ratio
+ggplot(mean_suicide_ratio, aes(x = gdp_per_capita_bine_jenks, y = mean_suicide_ratio, fill = gdp_per_capita_bine_jenks)) +
+  geom_col(show.legend = FALSE) + # Remove the color legend
+  scale_fill_brewer(palette = "Set2") + # Change the color palette
+  labs(title = "Mean Suicide Ratio by GDP Group",
+       x = "GDP Group (Jenks Natural Breaks)",
+       y = "Mean Suicide Ratio") +
+  theme_minimal() + # Use a clean theme
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x-axis labels for better readability
+
+```
+It appears that countries with lower GDP per capita tend to exhibit lower suicide rates. This observation suggests a possible inverse relationship between the economic status of a country and its suicide rate.
+
+### 3.3.1.3 Multivariate Analysis
+
+In this section, we aim to explore the relationship between a country's economic prosperity and its suicide rate. Specifically, we investigate the question: "As a country gets richer, does its suicide rate decrease?"
+
+It depends on the country - for almost every country, there is a high correlation between year and gdp per capita, i.e. as time goes on, gdp per capita linearly increases.
+
+```{r}
+country_year_gdp <- data %>%
+  group_by(country, year) %>%
+  summarize(GDP_per_capita = mean(GDP_per_capita), .groups = "drop")
+  
+country_year_gdp_corr <- country_year_gdp %>%
+  ungroup() %>%
+  group_by(country) %>%
+  summarize(year_gdp_correlation = cor(year, GDP_per_capita), .groups = "drop")
+```
+In our analysis, we examined the relationship between 'year' and 'GDP per capita' within individual countries by calculating the Pearson correlations. The results were intriguing: the mean correlation was 0.878, indicating a very strong positive linear relationship. Essentially, this suggests that an increase in wealth per person within a country is correlated with an increase in the country's suicide rate over time.
+
+However, it's crucial to note that these trends are not uniform across all countries. While some countries show an increase in suicide rates over time, most are actually experiencing a decrease.
+
+This leads us to ask a slightly different but equally significant question: Do wealthier countries have higher suicide rates? To explore this, we calculated the mean GDP per capita across all available years for each country, then compared this with the average suicide rate over the same period. This approach provides us with a single data point for each country, offering a general impression of a nation's affluence and its suicide rate.
+```{r}
+country_mean_gdp <- data %>%
+  group_by(country, continent) %>%
+  summarize(suicide_per_100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000, 
+            gdp_per_capita = mean(GDP_per_capita), .groups = "drop")
+
+ggplot(country_mean_gdp, aes(x = gdp_per_capita, y = suicide_per_100k, col = continent)) + 
+  geom_point() + 
+  scale_x_continuous(labels=scales::dollar_format(prefix="$"), breaks = seq(0, 70000, 10000)) + 
+  labs(title = "Correlation between GDP (per capita) and Suicides per 100k", 
+       subtitle = "Plot containing every country",
+       x = "GDP (per capita)", 
+       y = "Suicides per 100k", 
+       col = "Continent") 
+```
+A number of countries in our dataset exhibit high leverage and residuals, potentially influencing the fit of our regression line. A notable example is Lithuania, which is situated in the top left of our graph. To mitigate this impact, we'll apply Cook's Distance as a measure to identify and exclude outliers. We will exclude those countries with a Cook's Distance value greater than 4/n, which is a common threshold.
+
+After implementing this adjustment, we'll examine the revised model, now free of outliers, to better understand its statistical properties.
+
+```{r}
+model1 <- lm(suicide_per_100k ~ gdp_per_capita, data = country_mean_gdp)
+
+gdp_suicide_no_outliers <- model1 %>%
+  augment() %>%
+  arrange(desc(.cooksd)) %>%
+  filter(.cooksd < 4/nrow(.)) %>% # removes 5/93 countries
+  inner_join(country_mean_gdp, by = c("suicide_per_100k", "gdp_per_capita")) %>%
+  select(country, continent, gdp_per_capita, suicide_per_100k)
+
+model2 <- lm(suicide_per_100k ~ gdp_per_capita, data = gdp_suicide_no_outliers)
+
+summary(model2)
+```
+Based on our analysis, we cannot reject the null hypothesis, which suggests that there is no linear association between the suicide rate per 100,000 population and GDP per capita for each country. However, we anticipate that when we incorporate these variables with other factors, it may reveal a linear association. We will further explore this relationship in the upcoming model chapter.
+
+
+Check if the new features made any problem in the dataset.
+```{r}
+unfactorized_vars <- function(df) {
+  var_names <- names(df)
+  unfactorized <- var_names[sapply(df, function(x) is.character(x) | is.integer(x))]
+  return(unfactorized)
+}
+
+# Testing the function
+unfactorized_vars(data)
+```
+
+lets factorize them 
+
+```{r}
+data$avg_temp_bine_jenks <- factor(data$avg_temp_bine_jenks, 
+                   ordered = T, 
+                   levels = c("Cold","Warm"))
+
+data$min_temp_bine_jenks <- factor(data$min_temp_bine_jenks, 
+                   ordered = T, 
+                   levels = c("Very_Cold","Cold","Hot"))
+
+data$max_temp_bine_jenks <- factor(data$max_temp_bine_jenks, 
+                   ordered = T, 
+                   levels = c("Cold","Warm"))
+
+data$gdp_per_capita_bine_jenks <- factor(data$gdp_per_capita_bine_jenks, 
+                   ordered = T, 
+                   levels = c("Very_Low_income",
+                              "Low_income", 
+                              "Medium_income", 
+                              "High_income"))
+data$gdp_bine_median <- factor(data$gdp_bine_median, 
+                   ordered = T, 
+                   levels = c("Very_low_income",
+                              "low_income", 
+                              "Medium_income", 
+                              "high_income"))
+
+```
+
+
+```{r}
+null_percentage <- function(df) {
+  # Calculates the percentage of null values in each column of a dataframe
+
+  # Get the number of nulls in each column
+  nulls <- sapply(df, function(x) sum(is.na(x)))
+
+  # Calculate the percentage
+  percentages <- nulls / nrow(df) * 100
+
+  # Return the result as a data frame for easier viewing
+  return(data.frame(Column = names(df), NullPercentage = percentages))
+}
+
+# Usage:
+null_percentage(data)
+
+```
+
+## 3.4 Demographic Variables
+
+For this specific part, we have data on age, generation, and sex variables. It is important to emphasize that our dataset is well-distributed among each sex and age group. Each sex and age bound is represented by a single row in our dataset, ensuring comprehensive coverage across different demographic categories.
+
+### 3.3.1 Univariate Anaylysis
+
+Given that our data is well-distributed across different sexes and age groups, we can proceed to visualize a bar plot for the generation variable. This will provide a visual representation of how the data is distributed among different generations.
+
+```{r}
+# Define common theme for all plots
+common_theme <- theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# Bar plot for Generation
+generation_bar_plot <- data %>%
+  ggplot(aes(x = generation, fill = generation)) +
+  geom_bar() +
+  labs(title = "Bar Plot of Generation",
+       x = "Generation",
+       y = "Count") +
+  scale_fill_brewer(palette = "Set2") +
+  common_theme
+
+
+# Arrange plots
+grid.arrange(generation_bar_plot, ncol = 1)
+
+```
+
+### 3.3.2 Bivariate Analysis
+
+```{r}
+# Define the function
+create_suicide_rate_plot <- function(group_var) {
+  data %>%
+    group_by(!!sym(group_var)) %>%
+    summarize(suicide_per_100k = (sum(suicides_no) / sum(population)) * 100000) %>%
+    ggplot(aes_string(x = group_var, y = "suicide_per_100k", fill = group_var)) +
+    geom_col() +
+    labs(
+      #title = group_var, 
+      x = group_var,
+      y = ""
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(hjust = 1),
+      axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 1, size= 4),
+      axis.line.x = element_line(inherit.blank = TRUE)
+    ) +
+    coord_cartesian(ylim = c(0, 30)) + 
+    scale_fill_brewer(palette = "Set2")
+}
+
+theme_update(plot.title = element_blank(), axis.title.y = element_blank())
+
+sex_plot <- create_suicide_rate_plot("sex")
+age_plot <- create_suicide_rate_plot("age")
+generation_plot <- create_suicide_rate_plot("generation")
+
+# Arrange the plots
+grid.arrange(
+  top = textGrob("Global suicides per 100k", gp=gpar(fontsize=16, fontface="bold")),
+  left = textGrob("Suicides per 100k", rot=90, gp=gpar(fontsize=16, fontface="bold")),
+  arrangeGrob(sex_plot, age_plot, generation_plot, ncol=3)
+)
+
+```
+Based on the plots, we observe that suicides are more prevalent among men and the age group of 75 years and older. Regarding the generation variable, it appears that suicides were more common in the G.I. Generation (also known as the World War II generation). However, it is important to note that our data is not evenly distributed among the different generations, with limited data available for the G.I. Generation and Millennials. This necessitates further investigation to draw more reliable conclusions.
+
+To validate the insights from the plots and determine their statistical significance, we will employ statistical tests. These tests will help assess if the observed patterns are statistically significant or merely due to random variation.
+
+
+#### 3.3.2.1 T_test for Sex
+
+To determine if the assumption of Homogeneity of Variance is satisfied, we can employ the Levene's test. This statistical test allows us to assess if the variances are equal across the different groups under consideration. By conducting the Levene's test, we can evaluate if the Homogeneity of Variance assumption holds true in our data.
+```{r}
+leveneTest(log_suicide_ratio ~ sex, data = data)
+```
+
+```{r}
+t.test(log_suicide_ratio ~ sex, data = data, var.equal = FALSE)
+```
+The test results indicate that there is a statistically significant difference between males and females. This finding suggests that the suicide rates significantly vary between the two genders.
+
+#### 3.3.2.2 ANOVA for Age
+
+Since we have multiple age groups to compare, we can employ the ANOVA (Analysis of Variance) test. The hypothesis for the ANOVA test is as follows:
+
+H0: The mean suicide ratio is equal for all age groups.
+H1: There is at least one age group with a different mean suicide ratio.
+
+By conducting the ANOVA test, we can determine if there is a statistically significant difference in the mean suicide ratios among the various age groups.
+
+```{r}
+# Fit the model
+age_anova <- aov(log_suicide_ratio ~ age, data = data)
+
+# Run the ANOVA
+anova_result <- anova(age_anova)
+
+# Print the result
+print(anova_result)
+```
+Testing Normality of Residuals Assumption for ANOVA
+```{r}
+# Create a data frame for residuals
+residuals_df <- data.frame(residuals = residuals(age_anova))
+
+# Create histogram of residuals
+hist_plot <- ggplot(residuals_df, aes(x = residuals)) +
+  geom_histogram(fill = 'steelblue', color = 'black', bins = 30) +
+  theme_minimal() +
+  labs(x = "Residuals", y = "Frequency",
+       title = "Histogram of Residuals")
+
+# Create Q-Q plot of residuals
+qq_plot <- ggplot(residuals_df, aes(sample = residuals)) +
+  geom_qq(color = 'steelblue') +
+  geom_qq_line(color = 'red') +
+  theme_minimal() +
+  labs(title = "Normal Q-Q Plot",
+       x = "Theoretical Quantiles",
+       y = "Sample Quantiles")
+
+# Arrange the plots side by side using the gridExtra package
+library(gridExtra)
+grid.arrange(hist_plot, qq_plot, ncol = 2)
+```
+
+Testing Homogeneity of Variances Assumption for ANOVA
+```{r}
+leveneTest(log_suicide_ratio ~ age, data = data)
+```
+```{r}
+bartlett.test(log_suicide_ratio ~ age, data = data)
+```
+
+Since the p-value from both tests is small, we reject the null hypothesis, indicating that the variances are not equal across different groups. In this scenario, using the ANOVA test may not provide accurate results. As an alternative, we can employ the Kruskal-Wallis test, which is a non-parametric test suitable for situations where the assumption of equal variances is violated.
+
+```{r}
+kruskal.test(log_suicide_ratio ~ age, data = data)
+```
+The result of the Kruskal-Wallis test aligns with that of the ANOVA. The obtained p-value is significantly small, indicating that there is a statistically significant difference in the means of the target variable across the levels of the categorical variable. However, the ANOVA alone does not provide information about which specific groups have different means.
+
+To identify the specific groups with significant mean differences, we can employ Tukey's Honest Significant Difference (HSD) test. This post-hoc test allows us to conduct pairwise comparisons and determine which groups exhibit statistically significant differences in their means. By performing further investigations using the Tukey's HSD test, we can gain more insights into the specific group differences.
+```{r}
+TukeyHSD(age_anova)
+```
+
+#### 3.3.2.3 ANOVA for Generation
+```{r}
+# Fit the model
+generation_anova <- aov(log_suicide_ratio ~ generation, data = data)
+
+# Run the ANOVA
+anova_result <- anova(generation_anova)
+
+# Print the result
+print(anova_result)
+```
+```{r}
+leveneTest(log_suicide_ratio ~ generation, data = data)
+```
+```{r}
+kruskal.test(log_suicide_ratio ~ generation, data = data)
+```
+
+The obtained small p-values indicate that there is a statistically significant difference in the suicide rate among different generations. This finding suggests that the suicide rates vary significantly across the different generational cohorts.
+
+### 3.3.3 Multivariate Analysis
+
+#### 3.3.3.1 Trends Over Time
+
+##### 3.3.3.1.1 Sex
+```{r}
+sex_time_plot <- data %>%
+  group_by(year, sex) %>%
+  summarize(suicide_per_100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000,
+            .groups = "drop") %>%
+  ggplot(aes(x = year, y = suicide_per_100k, col = factor(sex))) + 
+  facet_grid(sex ~ ., scales = "free_y") + 
+  geom_line() + 
+  geom_point() + 
+  labs(title = "Trends Over Time, by Sex", 
+       x = "Year", 
+       y = "Suicides per 100k", 
+       color = "Sex") + 
+  theme(legend.position = "none") + 
+  scale_x_continuous(breaks = seq(1985, 2015, 5), minor_breaks = F)
+
+grid.arrange(sex_time_plot, ncol = 1)
+```
+Globally, the suicide rate for men has been approximately 3.5 times higher compared to women. Both male and female suicide rates reached their peak in 1995 and have been declining since then. It is noteworthy that the ratio of male to female suicide rates, which stands at 3.5 : 1, has remained relatively consistent since the mid-1990s. However, it is important to mention that during the 1980s, this ratio was comparatively lower.
+
+##### 3.3.3.1.2 Age
+
+```{r}
+age_time_plot <- data %>%
+  group_by(year, age) %>%
+  summarize(suicide_per_100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000,.groups = "drop") %>%
+  ggplot(aes(x = year, y = suicide_per_100k, col = age)) + 
+  facet_grid(age ~ ., scales = "free_y") + 
+  geom_line() + 
+  geom_point() + 
+  labs(title = "Trends Over Time, by Age", 
+       x = "Year", 
+       y = "Suicides per 100k", 
+       color = "Age") + 
+  theme(legend.position = "none") + 
+  scale_x_continuous(breaks = seq(1985, 2015, 5), minor_breaks = FALSE)
+
+grid.arrange(age_time_plot, ncol = 1)
+```
+
+Globally, there is an increased likelihood of suicide as age advances. Since 1995, the suicide rate has been consistently decreasing for individuals across all age groups. Notably, the suicide rate for those aged 75 and above has witnessed a significant decline of over 50% since 1990. These trends reflect positive progress in addressing and reducing suicide rates among different age demographics over the past few decades.
+
+
+##### 3.3.3.1.3 Generation
+
+When dealing with continuous data, such as someone's age in a given year, it is commonly assumed that their age determines their generation. However, it is important to note that in our dataset, not everyone within the same age group in a specific year belongs to the same generation.
+
+```{r}
+# Create the plot
+data %>%
+  group_by(generation, age, year) %>%
+  summarize(suicide_per_100k = (sum(suicides_no) / sum(population)) * 100000, .groups = 'drop') %>%
+  ggplot(aes(x = year, y = suicide_per_100k, color = generation)) + 
+  geom_point() + 
+  geom_line() + 
+  scale_color_brewer(palette = "Set2") +
+  facet_grid(age ~ ., scales = "free_y") + 
+  scale_x_continuous(breaks = seq(1985, 2020, 5)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Relationship between Generation, Age & Year", 
+       x = "Year", 
+       y = "Suicides per 100k", 
+       color = "Generation") + 
+  theme(
+    legend.position = "right"
+  )
+
+```
+Understanding the trend of generation suicide rates over time becomes problematic due to overlapping age categories. When comparing the rates below with the plotted data, we notice that large spikes occur when different age groups are classified as part of a certain generation or not. For instance, in 1991, there is a supposed spike in the suicide rate for the G.I. generation. However, this spike occurs because individuals aged '55 - 75' are suddenly excluded from this generation classification.
+
+```{r}
+# Define a common theme
+
+common_theme <- 
+  theme(
+    legend.position = "none",
+    #strip.background = element_blank(),
+    strip.text.x = element_text(size = 10, color = "black"),
+    strip.text.y = element_text(size = 5, color = "white"),
+    panel.background = element_rect(fill = "white", color = "black")
+    #panel.grid.major = element_line(color = "grey80"),
+    #panel.grid.minor = element_line(color = "grey90")
+  )
+
+# Create the suicide rate plot
+generation_rate <- data %>%
+  group_by(generation, year) %>%
+  summarize(suicide_per_100k = (sum(suicides_no) / sum(population)) * 100000, .groups = 'drop') %>%
+  ggplot(aes(x = year, y = suicide_per_100k, color = generation)) + 
+  geom_point(size = 1.5, alpha = 0.8) + 
+  geom_line(alpha = 0.6, linewidth= 1) + 
+  facet_grid(generation ~ ., scales = "free_y") + 
+  scale_x_continuous(breaks = seq(1985, 2020, 5)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Suicides per 100k, by Generation", 
+       x = "Year", 
+       y = "Suicides per 100k") +
+  common_theme
+
+# Create the population plot
+generation_population <- data %>%
+  group_by(generation, year) %>%
+  summarize(population = sum(population), .groups = 'drop') %>%
+  ggplot(aes(x = year, y = population / 1000000, color = generation)) + 
+  geom_point(size = 1.5, alpha = 0.8) + 
+  geom_line(alpha = 0.6, linewidth= 1) + 
+  facet_grid(generation ~ ., scales = "free_y") + 
+  scale_x_continuous(breaks = seq(1985, 2020, 5)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Population, by Generation", 
+       x = "Year", 
+       y = "Population (Millions)") +
+  common_theme
+
+# Arrange the plots
+grid.arrange(generation_rate, generation_population, ncol = 2)
+
+```
+The issue at hand likely stems from the methodology used to create the dataset. It appears that the generation variable was added after summarizing the data by country, year, age, and sex, which is problematic. In reality, not everyone within a specific age group and year can be accurately assigned to a single generation.
+
+As a result, the observed "spikes" in generation across time lack meaningful interpretation. Consequently, we cannot draw any conclusive conclusions regarding the suicide rates among different generations based on this dataset.
+
+
+#### 3.3.3.2 Age differences, by Continent
+
+```{r}
+global_average <- (sum(as.numeric(data$suicides_no)) / sum(as.numeric(data$population))) * 100000
+
+data %>%
+  group_by(continent, age) %>%
+  summarize(n = n(), 
+            suicides = sum(as.numeric(suicides_no)), 
+            population = sum(as.numeric(population)), 
+            suicide_per_100k = (suicides / population) * 100000, .groups= "drop") %>%
+  ggplot(aes(x = continent, y = suicide_per_100k, fill = age)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  geom_hline(yintercept = global_average, linetype = 2, color = "grey35", size = 1) +
+  labs(title = "Age Disparity, by Continent",
+       x = "Continent", 
+       y = "Suicides per 100k", 
+       fill = "Age")+
+  coord_flip()
+```
+In the regions of the Americas, Asia, and Europe, which comprise the majority of the dataset, the suicide rate tends to increase with age. However, it is important to note that for Oceania and Africa, the highest suicide rates are observed among individuals aged 25 to 34. Nevertheless, due to the limited availability of data for Africa, this particular finding may not be entirely reliable. Further investigation and data collection are necessary to provide more accurate insights into the suicide rates in Africa.
+
+#### 3.3.3.3 Gender differences, by Continent
+
+```{r}
+data %>%
+  group_by(continent, sex) %>%
+  summarize(n = n(), 
+            suicides = sum(as.numeric(suicides_no)), 
+            population = sum(as.numeric(population)), 
+            suicide_per_100k = (suicides / population) * 100000,
+            .groups = "drop") %>%
+  ggplot(aes(x = continent, y = suicide_per_100k, fill = sex)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  geom_hline(yintercept = global_average, linetype = 2, color = "grey35", size = 1) +
+  labs(title = "Gender Disparity, by Continent",
+   x = "Continent", 
+   y = "Suicides per 100k", 
+   fill = "Sex") +
+  coord_flip()
+```
+Between 1985 and 2015, European men faced the highest risk of suicide, with a rate of approximately 30 suicides per 100,000 population per year. In comparison, Asia had the lowest overrepresentation of male suicide, with the suicide rate for men being around 2.5 times higher than that for women. Conversely, in Europe, the male suicide rate was approximately 3.9 times higher than the female suicide rate, indicating a greater disparity between genders in suicide rates compared to Asia.
+
+#### 3.3.3.4 Gender differences, by Country
+
+```{r}
+# Overall suicide rate by country and continent
+country_long <- data %>%
+  group_by(country, continent) %>%
+  summarize(suicide_per_100k = (sum(suicides_no, na.rm = TRUE) / sum(population, na.rm = TRUE)) * 1e5, .groups = "drop") %>%
+  mutate(sex = "OVERALL")
+
+# Suicide rate by country, continent, and sex
+sex_country_long <- data %>%
+  group_by(country, continent, sex) %>%
+  summarize(suicide_per_100k = (sum(suicides_no, na.rm = TRUE) / sum(population, na.rm = TRUE)) * 1e5, .groups = "drop")
+
+# Pivot the data to wide format for visualization, and calculate the difference between Male and Female suicide rates
+sex_country_wide <- sex_country_long %>%
+  pivot_wider(names_from = sex, values_from = suicide_per_100k) %>%
+  arrange(Male - Female)
+
+# Convert 'country' to ordered factor based on difference in suicide rates between Male and Female
+ordered_countries <- sex_country_wide$country
+sex_country_wide$country <- factor(sex_country_wide$country, ordered = TRUE, levels = ordered_countries)
+sex_country_long$country <- factor(sex_country_long$country, ordered = TRUE, levels = ordered_countries)
+
+# Visualization
+ggplot(sex_country_wide, aes(y = country, color = sex)) + 
+  geom_dumbbell(aes(x=Female, xend=Male), color = "grey", size = 0.5) + 
+  geom_point(data = sex_country_long, aes(x = suicide_per_100k), size = 0.5) +
+  geom_point(data = country_long, aes(x = suicide_per_100k), size = 0.5) + 
+  geom_vline(xintercept = global_average, linetype = 2, color = "grey35", linewidth = 0.5) +
+  theme(axis.text.y = element_text(size = 1), legend.position = c(0.85, 0.2)) + 
+  scale_x_continuous(breaks = seq(0, round(max(sex_country_wide$Male, na.rm = TRUE) + 10, -1), 10)) +
+  labs(title = "Gender Disparity, by Continent & Country", 
+       subtitle = "Ordered by difference in deaths per 100k.", 
+       x = "Suicides per 100k", 
+       y = "Country", 
+       color = "Sex")
+
+```
+
+```{r}
+country_gender_prop <- sex_country_wide %>%
+  mutate(Male_Proportion = Male / (Female + Male)) %>%
+  arrange(Male_Proportion)
+
+sex_country_long$country <- factor(sex_country_long$country, 
+                                   ordered = T,
+                                   levels = country_gender_prop$country)
+
+ggplot(sex_country_long, aes(y = suicide_per_100k, x = country, fill = sex)) + 
+  geom_bar(position = "fill", stat = "identity") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Proportions of suicides that are Male & Female, by Country", 
+       x = "Country", 
+       y = "Suicides per 100k",
+       fill = "Sex") + 
+  coord_flip() +
+  theme(
+  legend.position = "right",
+  legend.key.size = unit(0.25, "cm"),
+  plot.title = element_text(hjust = 0.5),
+  axis.text.y = element_text(size= 4))
+```
+The over representation of men in suicide deaths is a widespread phenomenon observed in various countries. Although women may have higher rates of depression and suicidal thoughts, it is men who are more likely to die by suicide. This paradoxical pattern, known as the gender paradox in suicidal behavior, highlights the complex interplay of factors such as societal expectations, help-seeking behaviors, and coping mechanisms that contribute to the gender disparity in suicide rates. It underscores the need for further research and targeted interventions to address this issue and reduce the burden of suicide among both men and women. [links](https://en.wikipedia.org/wiki/Gender_differences_in_suicide)
+
+
+# 4.Model
+## 4.1 modification feutures 
+In this chapter, we begin with a comprehensive overview of our variables, identifying their characteristics and potential areas for refinement. We subsequently make necessary adjustments to improve their suitability for our analysis
+
+```{r}
+data1 <-data.frame(data)
+```
+In the initial phase of our analysis, we focus on refining our dataset for more accurate and meaningful results. Specifically, we remove certain columns that are not contributing to our understanding or prediction of the suicide ratio.
+
+As we've discussed earlier, variables such as 'population', 'suicide_no', and their related transformations or scaled versions inherently have a strong association with our target, the 'suicide_ratio'. The 'suicide_ratio' is an estimate of the likelihood of an individual committing suicide in a specific demographic group or country.
+
+While it might seem that 'population' would be a beneficial predictor for the 'suicide_ratio', including it may skew our results, leading to biased estimations. This is because it's not the mere size of the population, but specific characteristics within that population that lead to increased suicide ratios.
+
+To navigate this challenge, we incorporate different features to transform and convey the crucial information contained in these variables, without directly using them. This way, we aim to create a model that captures the nuances and complexity of the factors contributing to the suicide ratio.
+```{r}
+remove_var = c("sqrt_suicide_no","population","log_population","new_suicides_no","new_suicide_ratio","scaled_population","scaled_log_population","scaled_GDP_for_year","scaled_log_GDP_year","log_suicide_no","scaled_log_GDP_capita","sqrt_population","sqrt_suicide_no","suicides_no" )
+data1 <- dplyr::select(data1, -dplyr::one_of(remove_var))
+
+```
+In the section dedicated to outlier analysis, we observed that the log-transformed version of 'suicide_ratio' is significantly more resilient to outliers than the original 'suicide_ratio' variable. This discovery makes 'log(suicide_ratio)' a preferred candidate for our target variable, especially given its normal distribution which is a desirable property for many statistical models.
+
+To prepare our dataset for further modeling, we standardize our predictors by rescaling them to have a mean of zero and a standard deviation of one.Finally, to maintain a tidy dataset, we drop the original untransformed and unscaled columns. This leaves us with a clean, standardized dataset that is ready for the next stages of our analysis and modeling process.
+```{r}
+scale_columns <- function(data, columns_to_scale) {
+  # Loop over the columns
+  for (col in columns_to_scale) {
+    # Check if the column exists and is not all NA
+    if (!col %in% names(data) || all(is.na(data[[col]]))) {
+      message(paste("Column", col, "does not exist or is all NA. Skipping..."))
+      next
+    }
+    # Create a new column name
+    new_col_name <- paste0("scaled_", col)
+    
+    # Scale the column
+    data[[new_col_name]] <- scale(data[[col]])
+  }
+  
+  # Drop the original columns
+  data <- data[, !(names(data) %in% columns_to_scale)]
+  
+  return(data)
+}
+
+```
+
+```{r}
+scaled_var = c("GDP_for_year","GDP_per_capita","life_exp","avg_temp","min_temp","max_temp","log_GDP_year","log_GDP_capita","sqrt_GDP_year","sqrt_GDP_capita","log_suicide_ratio","suicide_ratio","sqrt_suicide_ratio")
+data2 <- scale_columns(data1,scaled_var)
+
+```
+## 4.2 Multicollinearity 
+### 4.2.1 Continuous Variable 
+In this section, we employ techniques such as heatmaps and Variance Inflation Factor (VIF) to investigate potential collinearity among our variables.
+
+A heatmap is a valuable visualization tool that illustrates the correlation matrix through a gradient color scheme. By visually representing the correlation coefficients, a heatmap can reveal patterns and relationships among variables, highlighting any potential multicollinearity issues.
+
+On the other hand, VIF is a numerical measure that quantifies the severity of multicollinearity in a regression analysis. It gauges the amount of multicollinearity by examining how much the variance of the estimated regression coefficients is increased due to multicollinearity. A high VIF suggests a high degree of collinearity with other variables, warranting attention.
+
+These techniques collectively give us a holistic view of the correlation structure among our variables, aiding in feature selection and model performance improvement.
+
+```{r}
+# we create a new dataframe which only includes numeric columns using sapply
+numeric_data <- data2[sapply(data2, is.numeric)]
+
+
+width <- 25
+height <- 25
+options(repr.plot.width = width, repr.plot.height = height)
+
+
+corr_matrix <- cor(numeric_data)
+
+# Round the correlation matrix to 3 decimal places
+rounded_corr <- round(corr_matrix, 3)
+
+# Create the correlation plot
+ggcorrplot(rounded_corr, 
+           lab = TRUE, 
+           lab_size = 1.5, 
+           method = "circle", 
+           pch = 1, 
+           colors = c("red", "#ebebeb", "#13527a")) +
+  theme(axis.text.x = element_text(size = 10))
+
+```
+there is strong corrilation between some of the variables
+
+##### VIF
+
+```{r}
+remove_var <- c("scaled_sqrt_suicide_ratio","scaled_log_suicide_ratio")
+data_simple <-dplyr::select(numeric_data, -dplyr::one_of(remove_var))
+remove_var <- c("scaled_sqrt_suicide_ratio","scaled_suicide_ratio")
+data_log <-dplyr::select(numeric_data, -dplyr::one_of(remove_var))
+remove_var <- c("scaled_log_suicide_ratio","scaled_suicide_ratio")
+data_sqrt <-dplyr::select(numeric_data, -dplyr::one_of(remove_var))
+
+```
+and for each target we make a vif graph
+```{r}
+mod.linear <- lm(scaled_suicide_ratio~ ., data = data_simple)
+vifs <- data.frame(vif(mod.linear))
+
+ggplot(vifs, aes(y=vif.mod.linear., x=row.names(vifs))) + 
+    geom_bar(aes(fill=vif.mod.linear.>5),stat="identity")+
+    scale_y_continuous(trans = "sqrt",  breaks = c(5, 10, 50, 100))+
+    geom_hline(yintercept = 5, colour = "red") + 
+    ggtitle("VIF per feature for suicide_ratio as target") +
+    xlab("Featurs") + ylab("VIF") +
+    theme(axis.text.x=element_text(angle=20, hjust=1))+
+    theme(text = element_text(size = 10))+
+    scale_fill_brewer(palette="RdYlBu")
+```
+As observable from our analysis, numerous variables exhibit high VIF, a sign of multicollinearity. This isn't surprising given that many variables were derived from one another through transformations. To handle this, we need to employ a strategy of variable clustering. Each cluster would contain variables that are highly correlated with one another, indicating potential multicollinearity.
+
+From each cluster, we would then select the variable that strikes the best balance between having the highest correlation with our target and the least susceptibility to outliers. This approach enables us to maintain essential information while mitigating the negative effects of multicollinearity, thereby enhancing our model's predictive performance.
+```{r}
+gdp_var <-c("scaled_GDP_for_year","scaled_GDP_per_capita","scaled_log_GDP_year", "scaled_log_GDP_capita","scaled_sqrt_GDP_year","scaled_sqrt_GDP_capita")
+temp_var<-c("scaled_min_temp","scaled_avg_temp","scaled_max_temp")
+```
+for suicide_ratio scaled_min_temp and scaled_GPD_per_year
+lets do this test again 
+```{r}
+mod.linear <- lm(scaled_suicide_ratio~ ., data = subset((data_simple),select = c(year,scaled_life_exp,scaled_min_temp,scaled_GDP_for_year,scaled_suicide_ratio)))
+vifs <- data.frame(vif(mod.linear))
+ggplot(vifs, aes(y=vif.mod.linear., x=row.names(vifs))) + 
+    geom_bar(aes(fill=vif.mod.linear.>5),stat="identity")+
+    scale_y_continuous(trans = "sqrt",  breaks = c(5, 10, 50, 100))+
+    geom_hline(yintercept = 5, colour = "red") + 
+    ggtitle("VIF per feature for suicide_ratio as target") +
+    xlab("Featurs") + ylab("VIF") +
+    theme(axis.text.x=element_text(angle=20, hjust=1))+
+    theme(text = element_text(size = 10))+
+    scale_fill_brewer(palette="RdYlBu")
+```
+we do same for log_suicide_ratio and sqrt_suicide_ratio 
+for log_suicide_ratio scaled_avg_temp and scaled_log_GDp_capita
+suicide_ratio scaled_min_temp and scaled_GPD_per_year
+lets do this test again 
+```{r}
+mod.linear <- lm(scaled_log_suicide_ratio~ ., data = subset((data_log),select = c(year,scaled_life_exp,scaled_avg_temp,scaled_log_GDP_capita,scaled_log_suicide_ratio)))
+vifs <- data.frame(vif(mod.linear))
+
+ggplot(vifs, aes(y=vif.mod.linear., x=row.names(vifs))) + 
+    geom_bar(aes(fill=vif.mod.linear.>5),stat="identity")+
+    scale_y_continuous(trans = "sqrt",  breaks = c(5, 10, 50, 100))+
+    geom_hline(yintercept = 5, colour = "red") + 
+    ggtitle("VIF per feature for suicide_ratio as target") +
+    xlab("Featurs") + ylab("VIF") +
+    theme(axis.text.x=element_text(angle=20, hjust=1))+
+    theme(text = element_text(size = 10))+
+    scale_fill_brewer(palette="RdYlBu")
+```
+
+suicide_ratio scaled_min_temp and scaled_GPD_per_year
+for log_suicide_ratio scaled_avg_temp and scaled_log_GDp_capita
+for sqrt_suicide_ratio scaled_avg_temp and scaled_log_GDp_capita
+lets do this test again 
+```{r}
+mod.linear <- lm(scaled_sqrt_suicide_ratio~ ., data = subset((data_sqrt),select = c(year,scaled_life_exp,scaled_log_GDP_year,scaled_avg_temp,scaled_sqrt_suicide_ratio)))
+vifs <- data.frame(vif(mod.linear))
+
+ggplot(vifs, aes(y=vif.mod.linear., x=row.names(vifs))) + 
+    geom_bar(aes(fill=vif.mod.linear.>5),stat="identity")+
+    scale_y_continuous(trans = "sqrt",  breaks = c(5, 10, 50, 100))+
+    geom_hline(yintercept = 5, colour = "red") + 
+    ggtitle("VIF per feature for suicide_ratio as target") +
+    xlab("Featurs") + ylab("VIF") +
+    theme(axis.text.x=element_text(angle=20, hjust=1))+
+    theme(text = element_text(size = 10))+
+    scale_fill_brewer(palette="RdYlBu")
+```
+
+as we can see all of them have value less than 5 and we can say that there is no coliniarity between these variable.
+### 4.2.2 Categorical variable 
+The concept of multicollinearity is a bit less straightforward when applied to categorical variables, particularly because categorical variables can take on limited, and usually few, distinct values.
+
+However, multicollinearity can still occur with categorical variables. For example, suppose you have a dataset of cars, and you have two variables: "Brand" and "Country". If every "Brand" uniquely maps to a "Country" (e.g., if 'Toyota' is always 'Japan', 'Ford' is always 'USA', etc.), then these two variables are perfectly multicollinear.
+we can use chi squre but chisq is very sensetive to unbalanced variable.
+we will ues Cramér's V for categorical variables. 
+Cramér's V is a statistical measure that assesses the strength of association between two nominal variables. It is based on Pearson's chi-squared statistic and was published by Harald Cramér in 1946.
+  
+Cramér's V ranges from 0 (indicating no association between the variables) to 1 (indicating a perfect association). It could be seen as an extension of the correlation coefficient to nominal data.
+
+Cramér's V is symmetrical — it does not matter which variable we consider as independent or dependent. The formula for Cramér's V is:
+
+V = sqrt((X^2/n) / (min(k-1, r-1)))
+
+where:
+
+X^2 is the chi-squared statistic,
+n is the total sample size,
+k is the number of columns,
+r is the number of rows in the contingency table.
+Just like with correlation, a value close to 0 indicates little association between the variables, and a value close to 1 indicates a strong association. However, unlike correlation, Cramér's V can only reach 1 in the case of complete association (all cells other than the diagonal are 0), or when the number of rows equals the number of columns.
+first seperate categorical var
+```{r}
+factor_vars <- sapply(data, is.factor)
+
+factor_vars_names <- names(data)[factor_vars]
+```
+```{r}
+factor_vars_names
+```
+then we apply Cramér's V for each pair of this variable. 
+
+```{r}
+# Retrieve all the categorical variable names
+factor_vars_names <- names(data[sapply(data, is.factor)])
+
+# Initialize a data frame to hold the Cramer's V values
+V_df <- data.frame(matrix(nrow = length(factor_vars_names), ncol = length(factor_vars_names)))
+names(V_df) <- factor_vars_names
+rownames(V_df) <- factor_vars_names
+
+# Loop over each pair of variables
+for(i in 1:length(factor_vars_names)){
+  for(j in 1:length(factor_vars_names)){
+    if(i != j){
+      
+      # Create a contingency table
+      tab <- table(data[[factor_vars_names[i]]], data[[factor_vars_names[j]]])
+      
+      # Perform Chi-square test
+      chi_sq <- chisq.test(tab)
+      
+      # Calculate Cramer's V
+      n <- sum(tab) # total number of observations
+      k <- min(dim(tab)) # number of rows or columns (whichever is smaller)
+      V <- sqrt(chi_sq$statistic / (n * (k - 1)))
+      
+      V_df[i,j] <- V
+      
+      cat("Cramer's V for", factor_vars_names[i], "and", factor_vars_names[j], ":", V, "\n")
+      
+    } else {
+      V_df[i,j] <- NA
+    }
+  }
+}
+
+# Replace NA values with 0
+V_df[is.na(V_df)] <- 0
+
+
+print(V_df)
+
+```
+
+```{r}
+#install.packages("pheatmap")
+
+```
+```{r}
+library(pheatmap)
+
+# Make the heatmap
+pheatmap(V_df, color = colorRampPalette(c("navy", "white", "firebrick3"))(25))
+```
+As observed, the 'country' variable demonstrates significant associations with numerous variables. This is expected given that these variables were created via a 'group_by' operation on 'country'.
+
+However, the crucial observation is the substantial association among 'avg_temp_bine_jenks', 'min_temp_bine_jenks', and 'max_temp_bine_jenks'. For model efficiency, we should select one from this set.
+
+To guide this selection, we ran several linear models to evaluate compatibility between these temperature variables and our potential targets ('suicide_ratio', 'log_suicide_ratio', and 'sqrt_suicide_ratio').
+
+We compiled a dataframe featuring our three targets and the three temperature variables. The dataframe entries represent the adjusted R-squared values for each corresponding pair, providing a basis for optimal feature selection.
+```{r}
+targets <- c("scaled_suicide_ratio", "scaled_log_suicide_ratio", "scaled_sqrt_suicide_ratio")
+variables <- c("avg_temp_bine_jenks","min_temp_bine_jenks", "max_temp_bine_jenks"
+)
+
+adjusted_r2 <- matrix(nrow = length(targets), ncol = length(variables))
+rownames(adjusted_r2) <- targets
+colnames(adjusted_r2) <- variables
+
+# loop over each target and variable
+for (target in targets) {
+  for (var in variables) {
+    
+    formula <- as.formula(paste(target, var, sep = " ~ "))
+    
+    # fit the linear model
+    model <- lm(formula, data = data2)
+    
+    adjusted_r2[target, var] <- summary(model)$adj.r.squared
+  }
+}
+
+# convert the matrix to a data frame
+adjusted_r2_df <- as.data.frame(adjusted_r2)
+
+
+print(adjusted_r2_df)
+```
+Considering the three potential target variables, 'min_temp_bine_jenks' consistently shows better performance in terms of R-squared values.
+
+Thus far, we have categorized our features into continuous and categorical candidates.
+
+Our final feature candidates, as determined by their collinearity and correlation with the target variable, are as follows:
+
+```{r}
+scaled_suicide_ratio_var <-c("year","country","sex","age","continent","population_bine_jenks","scaled_GDP_for_year","min_temp_bine_jenks","gdp_per_capita_bine_jenks","scaled_min_temp")
+scaled_log_suicide_ratio_var <-c("year","country","sex","age","continent","population_bine_jenks","scaled_log_GDP_capita","min_temp_bine_jenks","gdp_per_capita_bine_jenks","scaled_avg_temp")
+scaled_sqrt_suicide_ratio_var <-c("year","country","sex","age","continent","population_bine_jenks","scaled_log_GDP_capita" ,"min_temp_bine_jenks","gdp_per_capita_bine_jenks","scaled_avg_temp")
+
+```
+## 4.3 Models selection
+so for we have 3 target variable and for each one we found different proper variable. in this section we inspect different models with different criteria 
+
+To apply linear regression we need to make sure that four conditions are satisfied:
+
+1.No multicollinearity: no high correlation between the independent variables;
+2.Linearity: there must be a linear relationship between the target variablesand the other variables;
+3.Normality: the residuals must be normally distributed;
+4.Homoscedasticity: the residuals must have a constant variance
+
+in previoues section we inspect multiliniarity problem and gave proper solution for each targts
+lets first make a simple model for each variable and see which conditions will meet.
+```{r}
+#suicide_ratio
+formula <- as.formula(paste("scaled_suicide_ratio", "~", paste(scaled_suicide_ratio_var, collapse = " + ")))
+
+model_suicide_ratio <- lm(formula, data = data2)
+summary(model_suicide_ratio)
+```
+
+```{r}
+data2 <- data2%>%
+  filter(age != '5-14')
+```
+
+```{r}
+#log_suicide_ratio
+formula <- as.formula(paste("scaled_log_suicide_ratio", "~", paste(scaled_log_suicide_ratio_var, collapse = " + ")))
+
+model_log_suicide_ratio <- lm(formula, data = data2)
+summary(model_log_suicide_ratio)
+```
+```{r}
+#ssqrt_uicide_ratio
+formula <- as.formula(paste("scaled_sqrt_suicide_ratio", "~", paste(scaled_sqrt_suicide_ratio_var, collapse = " + ")))
+
+model_sqrt_suicide_ratio <- lm(formula, data = data2)
+summary(model_sqrt_suicide_ratio)
+```
+
+Before we delve deeper into our linear regression analysis, it's crucial to emphasize that the assumptions underpinning this model don't need to be flawlessly met. However, severe violations can skew the model's accuracy and lead to misleading results.
+
+Now, let's turn our attention to evaluating other necessary conditions for our regression model.
+
+```{r}
+plot(model_suicide_ratio,1)
+```
+```{r}
+plot(model_log_suicide_ratio,1)
+```
+```{r}
+plot(model_sqrt_suicide_ratio,1)
+```
+
+The linearity condition doesn't appear to be perfectly satisfied for any of our targets. However, the residuals for the log-transformed target are reasonably well-distributed and do not demonstrate any discernible patterns. On the other hand, the suicide_ratio and sqrt_suicide_ratio targets, particularly the former, do display unusual patterns in the residuals graph. Let's continue our evaluation by assessing the next assumption of our model.
+
+
+
+```{r}
+plot(model_suicide_ratio,2)
+```
+```{r}
+plot(model_log_suicide_ratio,2)
+```
+```{r}
+plot(model_sqrt_suicide_ratio,2)
+```
+```{r}
+library(olsrr)
+ols_plot_resid_hist(model_suicide_ratio)
+ols_plot_resid_hist(model_log_suicide_ratio)
+ols_plot_resid_hist(model_sqrt_suicide_ratio)
+```
+As observed, the majority of our residuals for the log_suicide_ratio and sqrt_suicide_ratio models lie within -1 and 1, and -1.5 and 1.5 respectively, and their distributions largely follow a normal pattern. However, the suicide_ratio model doesn't appear to satisfy these conditions as effectively.
+
+To evaluate the final assumption - homoscedasticity of residuals - we apply the Breusch-Pagan test. The test's null hypothesis assumes homoscedasticity. If the p-value is significant (generally, less than 0.05), it suggests a deviation from this assumption, indicating heteroscedasticity.
+ 
+```{r}
+library(lmtest)
+bptest(model_suicide_ratio)
+bptest(model_log_suicide_ratio)
+bptest(model_sqrt_suicide_ratio)
+```
+
+```{r}
+plot(model_log_suicide_ratio,3)
+plot(model_sqrt_suicide_ratio,3)
+```
+The plot visualizes the residuals' variance in relation to the predictors. Ideally, the residuals should be randomly scattered around the centerline, signifying homoscedasticity.
+
+In our case, residuals are somewhat evenly distributed, indicating violation of homoscedasticity. This suggests our model probabiy be  less accurate across the predictor range, but it does not drastically impact the overall model's reliability.
+we can conclude that suicide_rate not a good candidate for target value.
+
+### 4.3.1 Feature selection 
+Feature selection, also known as variable selection, attribute selection, or variable subset selection, is the process of selecting a subset of relevant features for use in model construction. The goal of feature selection is three-fold:
+
+*Improving Model Performance: When irrelevant or partially relevant features are used to construct a predictive model, the accuracy of the model can be significantly degraded. By selecting only the most relevant features to use in model construction, we can enhance the predictive accuracy of the model.
+
+*Reducing Overfitting: Too many features in the model can lead to overfitting, where the model performs well on the training data but poorly on unseen data. By reducing the number of features, we can make the model more generalizable.
+
+*Enhancing Interpretability: Models with fewer features are simpler and easier to interpret.
+
+Reducing Training Time: Fewer features mean faster training times.
+
+Feature selection methods are intended to reduce the number of input variables to those that are believed to be most useful to a model in order to predict the target variable. Not all features are created equal. Some are relevant to the target variable, some are irrelevant, and some are redundant. Feature selection enables us to focus on the relevant and non-redundant features, increasing our model's performance and interpretability. 
+
+Feature selection methods:
+
+Forward Selection: You start with an empty model and add predictors one by one. In each step, you add the variable that gives the most significant improvement to the model.
+
+Backward Selection: You start with the full model and remove predictors one by one. In each step, you remove the variable that is the least significant.
+
+Mixed Selection: This is a combination of forward and backward selection. You start with an empty model, add variables as in forward selection, but after adding each new variable, the method may also remove variables that do not contribute to the model fit.
+in this project we use criteria like RSS, adjr2, Mallow’s Cp (cp) and Bayesian Information Criterion (BIC).
+Residual Sum of Squares (RSS): This is a measure of the discrepancy between the data and an estimation model. A small RSS indicates a tight fit of the model to the data.
+
+Adjusted R-squared (adjr2): It is a modification of R-squared that adjusts for the number of predictors in the model. Unlike R-squared, the adjusted R-squared increases only if the new term enhances the model more than would be expected by chance.
+
+Mallow’s Cp (cp): This criterion attempts to identify a model with a balance between under-fitting and over-fitting. Its ideal value is p (the number of predictors in the model), and a good model is a model where Cp is nearly equal to its p-value.
+
+Bayesian Information Criterion (BIC): This criterion deals with model selection problems. Lower BIC means better model.
+
+
+log_suicide_ratio
+```{r}
+library(leaps)
+
+# First, fit a full model
+full_model <- model_log_suicide_ratio
+
+#log_suicide_ratio
+formula <- as.formula(paste("scaled_log_suicide_ratio", "~", paste(scaled_log_suicide_ratio_var, collapse = " + ")))
+
+
+
+# Forward Selection
+forward_model_log <- regsubsets(formula, data = data2, nvmax = length(data2)-1, method = "forward")
+forward_summary <- summary(forward_model_log)
+
+# Backward Selection
+backward_model_log <- regsubsets(formula, data = data2, nvmax = length(data2)-1, method = "backward")
+backward_summary <- summary(backward_model_log)
+
+# Mixed (stepwise) selection
+stepwise_model_log <- regsubsets(formula, data = data2, nvmax = length(data2)-1, method = "seqrep")
+stepwise_summary <- summary(stepwise_model_log)
+
+# Create a dataframe with the criteria for each method
+comparison_df_log <- data.frame(
+  Method = c("Forward", "Backward", "Mixed"),
+  RSS = c(forward_summary$rss[which.min(forward_summary$cp)], 
+          backward_summary$rss[which.min(backward_summary$cp)], 
+          stepwise_summary$rss[which.min(stepwise_summary$cp)]),
+  AdjustedR2 = c(max(forward_summary$adjr2), max(backward_summary$adjr2), max(stepwise_summary$adjr2)),
+  Cp = c(min(forward_summary$cp), min(backward_summary$cp), min(stepwise_summary$cp)),
+  BIC = c(min(forward_summary$bic), min(backward_summary$bic), min(stepwise_summary$bic))
+)
+
+
+print(comparison_df_log)
+
+```
+forward has higher adjustedR2 and lower BIC for log.
+
+```{r}
+library(leaps)
+
+# First, fit a full model
+full_model <- model_sqrt_suicide_ratio
+
+#log_suicide_ratio
+formula <- as.formula(paste("scaled_sqrt_suicide_ratio", "~", paste(scaled_sqrt_suicide_ratio_var, collapse = " + ")))
+
+  
+
+# Forward Selection
+forward_model_sqrt <- regsubsets(formula, data = data2, nvmax = length(data2)-1, method = "forward")
+forward_summary <- summary(forward_model_sqrt)
+
+# Backward Selection
+backward_model_sqrt <- regsubsets(formula, data = data2, nvmax = length(data2)-1, method = "backward")
+
+backward_summary <- summary(backward_model_sqrt)
+
+# Mixed (stepwise) selection
+stepwise_model_sqrt <- regsubsets(formula, data = data2, nvmax = length(data2)-1, method = "seqrep")
+stepwise_summary <- summary(stepwise_model_sqrt)
+
+# Create a dataframe with the criteria for each method
+comparison_df_sqrt <- data.frame(
+  Method = c("Forward", "Backward", "Mixed"),
+  RSS = c(forward_summary$rss[which.min(forward_summary$cp)], 
+          backward_summary$rss[which.min(backward_summary$cp)], 
+          stepwise_summary$rss[which.min(stepwise_summary$cp)]),
+  AdjustedR2 = c(max(forward_summary$adjr2), max(backward_summary$adjr2), max(stepwise_summary$adjr2)),
+  Cp = c(min(forward_summary$cp), min(backward_summary$cp), min(stepwise_summary$cp)),
+  BIC = c(min(forward_summary$bic), min(backward_summary$bic), min(stepwise_summary$bic))
+)
+
+
+print(comparison_df_sqrt)
+
+```
+
+
+forward has higher adjustedR2 and lower BIC for both log and sqrt but its much lesser than original model
+
+```{r}
+var1<-c(scaled_log_suicide_ratio_var,"scaled_log_suicide_ratio")
+data3<-data2 %>% select(one_of(var1))
+trainData_log <- data3 %>% filter(year <=2010)
+testData_log <- data3 %>% filter(year >2010)
+```
+
+```{r}
+var1<-c(scaled_sqrt_suicide_ratio_var,"scaled_sqrt_suicide_ratio")
+data3<-data2 %>% select(one_of(var1))
+trainData_sqrt <- data3 %>% filter(year <=2010)
+testData_sqrt <- data3 %>% filter(year >2010)
+```
+just for seeing how much our works on data is been influential on performance of model we inspect initial data performance on models too
+```{r}
+initial_var<-c("country","year","sex","age","suicide_ratio","GDP_for_year","GDP_per_capita","generation","continent","life_exp","avg_temp","max_temp","min_temp")
+data3<-data %>% select(one_of(initial_var))
+trainData_initial <- data3 %>% filter(year <=2010)
+testData_initial <- data3 %>% filter(year >2010)
+```
+### 4.4.1 Simple linear model 
+first we train a model for target log 
+```{r}
+library(Metrics)
+formula <- as.formula(paste("scaled_log_suicide_ratio", "~", paste(scaled_log_suicide_ratio_var, collapse = " + ")))
+
+model <- lm(formula, data = trainData_log)
+data_test <- testData_log
+# Make predictions on the testing data
+predictions <- predict(model, newdata = testData_log)
+target <-"scaled_log_suicide_ratio"
+# Calculate Mean Squared Error (MSE)
+mse <- mse(testData_log$scaled_log_suicide_ratio, predictions)
+print(paste0("MSE: ", mse))
+
+# Calculate R-squared
+sse = sum((predictions - testData_log$scaled_log_suicide_ratio)^2)
+sst = sum((testData_log$scaled_log_suicide_ratio - mean(testData_log$scaled_log_suicide_ratio))^2)
+r_squared = 1 - sse / sst
+print(paste0("R-squared: ", r_squared))
+
+# Calculate Adjusted R-squared
+n = length(testData_log$scaled_log_suicide_ratio) # number of observations
+p = length(coef(model)) - 1 # number of predictors
+adjusted_r_squared = 1 - (1 - r_squared) * ((n - 1) / (n - p - 1))
+print(paste0("Adjusted R-squared: ", adjusted_r_squared))
+
+```
+
+
+```{r}
+library(Metrics)
+formula <- as.formula(paste("scaled_sqrt_suicide_ratio", "~", paste(scaled_sqrt_suicide_ratio_var, collapse = " + ")))
+
+model <- lm(formula, data = trainData_sqrt)
+
+# Make predictions on the testing data
+predictions <- predict(model, newdata = testData_sqrt)
+
+# Calculate Mean Squared Error (MSE)
+mse <- mse(testData_sqrt$scaled_sqrt_suicide_ratio, predictions)
+print(paste0("MSE: ", mse))
+
+# Calculate R-squared
+sse = sum((predictions - testData_sqrt$scaled_sqrt_suicide_ratio)^2)
+sst = sum((testData_sqrt$scaled_sqrt_suicide_ratio - mean(testData_sqrt$scaled_sqrt_suicide_ratio))^2)
+r_squared = 1 - sse / sst
+print(paste0("R-squared: ", r_squared))
+
+# Calculate Adjusted R-squared
+n = length(testData_sqrt$scaled_sqrt_suicide_ratio) # number of observations
+p = length(coef(model)) - 1 # number of predictors
+adjusted_r_squared = 1 - (1 - r_squared) * ((n - 1) / (n - p - 1))
+print(paste0("Adjusted R-squared: ", adjusted_r_squared))
+
+```
+
+initial_data
+```{r}
+library(Metrics)
+a <-c("country","year","sex","age","GDP_for_year","GDP_per_capita","generation","continent","life_exp","avg_temp","max_temp","min_temp")
+formula <- as.formula(paste("suicide_ratio", "~", paste(a, collapse = " + ")))
+
+model <- lm(formula, data = trainData_initial)
+
+# Make predictions on the testing data
+predictions <- predict(model, newdata = testData_initial)
+
+# Calculate Mean Squared Error (MSE)
+mse <- mse(testData_initial$suicide_ratio, predictions)
+print(paste0("MSE: ", mse))
+
+# Calculate R-squared
+sse = sum((predictions - testData_initial$suicide_ratio)^2)
+sst = sum((testData_initial$suicide_ratio - mean(testData_initial$suicide_ratio))^2)
+r_squared = 1 - sse / sst
+print(paste0("R-squared: ", r_squared))
+
+# Calculate Adjusted R-squared
+n = length(testData_initial$suicide_ratio) # number of observations
+p = length(coef(model)) - 1 # number of predictors
+adjusted_r_squared = 1 - (1 - r_squared) * ((n - 1) / (n - p - 1))
+print(paste0("Adjusted R-squared: ", adjusted_r_squared))
+
+```
+
+it shows that our hard work was effective
+### 4.4.2 Lasso regression model
+Lasso regression is a type of regression analysis method that performs both variable selection and regularization in order to enhance the prediction accuracy and interpretability of the statistical model it produces. The term Lasso is an acronym for Least Absolute Shrinkage and Selection Operator.
+
+The Lasso method introduces a penalty term to the loss function of the linear regression model that is the absolute value of the magnitude of the coefficient values, or simply the absolute value of each coefficient.
+lasso for log target
+```{r}
+
+library(caret)
+library(glmnet)
+
+
+x_train <- model.matrix(scaled_log_suicide_ratio~., trainData_log)[,-1] # Exclude intercept column
+y_train <- trainData_log$scaled_log_suicide_ratio
+x_test <- model.matrix(scaled_log_suicide_ratio~., testData_log)[,-1] # Exclude intercept column
+y_test <- testData_log$scaled_log_suicide_ratio
+
+# Define the cross-validation experiment
+cvfit <- cv.glmnet(x_train, y_train, alpha = 1, type.measure = "mse")
+
+# Get the optimal lambda value
+lambda_optimal <- cvfit$lambda.min
+
+# Train the final model using the optimal lambda
+final_model <- glmnet(x_train, y_train, alpha = 1, lambda = lambda_optimal)
+
+
+predictions <- predict(final_model, s = lambda_optimal, newx = x_test)
+
+# Evaluate the performance
+mse <- mean((predictions - y_test)^2)
+
+print(paste("MSE on the test set: ", mse))
+
+rsq <- 1 - sum((predictions - y_test)^2) / sum((mean(y_test) - y_test)^2)
+print(paste("RSQ test :",rsq))
+# Calculate adjusted R-squared
+n <- length(y_test) # number of observations
+p <- coef(final_model, s = "lambda.min") # number of predictors
+adj_rsq <- 1 - (1 - rsq) * (n - 1) / (n - length(p) - 1)
+
+print(paste("Adjuster R squre :",adj_rsq))
+```
+
+for sqre target
+```{r}
+
+library(caret)
+library(glmnet)
+
+
+x_train <- model.matrix(scaled_sqrt_suicide_ratio~., trainData_sqrt)[,-1] # Exclude intercept column
+y_train <- trainData_sqrt$scaled_sqrt_suicide_ratio
+x_test <- model.matrix(scaled_sqrt_suicide_ratio~., testData_sqrt)[,-1] # Exclude intercept column
+y_test <- testData_sqrt$scaled_sqrt_suicide_ratio
+
+# Define the cross-validation experiment
+cvfit <- cv.glmnet(x_train, y_train, alpha = 1, type.measure = "mse")
+
+# Get the optimal lambda value
+lambda_optimal <- cvfit$lambda.min
+
+# Train the final model using the optimal lambda
+final_model <- glmnet(x_train, y_train, alpha = 1, lambda = lambda_optimal)
+
+
+predictions <- predict(final_model, s = lambda_optimal, newx = x_test)
+
+# Evaluate the performance
+mse <- mean((predictions - y_test)^2)
+
+print(paste("MSE on the test set: ", mse))
+
+rsq <- 1 - sum((predictions - y_test)^2) / sum((mean(y_test) - y_test)^2)
+print(paste("RSQ test :",rsq))
+# Calculate adjusted R-squared
+n <- length(y_test) # number of observations
+p <- coef(final_model, s = "lambda.min") # number of predictors
+adj_rsq <- 1 - (1 - rsq) * (n - 1) / (n - length(p) - 1)
+
+print(paste("Adjuster R squre :",adj_rsq))
+```
+
+
+### 4.4.3 Ridge regression
+Ridge regression, also known as Tikhonov regularization, is a regularization technique designed to deal with multicollinearity, improve prediction accuracy, and interpretability of the statistical model it is applied to. Ridge regression performs "L2 regularization," which means that it adds a penalty equivalent to the square of the magnitude of the coefficients. This results in smaller coefficients, which makes the model less complex and better at generalizing from the training data to unseen data.
+
+for log target
+```{r}
+
+library(caret)
+library(glmnet)
+
+
+x_train <- model.matrix(scaled_log_suicide_ratio~., trainData_log)[,-1] # Exclude intercept column
+y_train <- trainData_log$scaled_log_suicide_ratio
+x_test <- model.matrix(scaled_log_suicide_ratio~., testData_log)[,-1] # Exclude intercept column
+y_test <- testData_log$scaled_log_suicide_ratio
+
+# Define the cross-validation experiment
+cvfit <- cv.glmnet(x_train, y_train, alpha = 0, type.measure = "mse")
+
+# Get the optimal lambda value
+lambda_optimal <- cvfit$lambda.min
+
+# Train the final model using the optimal lambda
+final_model <- glmnet(x_train, y_train, alpha = 0, lambda = lambda_optimal)
+
+
+predictions <- predict(final_model, s = lambda_optimal, newx = x_test)
+
+# Evaluate the performance
+rmse <-mean((predictions - y_test)^2)
+
+print(paste("MSE on the test set: ", rmse))
+
+rsq <- 1 - sum((predictions - y_test)^2) / sum((mean(y_test) - y_test)^2)
+print(paste("RSQ test :",rsq))
+# Calculate adjusted R-squared
+n <- length(y_test) # number of observations
+p <- coef(final_model, s = "lambda.min") # number of predictors
+adj_rsq <- 1 - (1 - rsq) * (n - 1) / (n - length(p) - 1)
+
+print(paste("Adjuster R squre :",adj_rsq))
+```
+for sqrt target 
+```{r}
+x_train <- model.matrix(scaled_sqrt_suicide_ratio~., trainData_sqrt)[,-1] # Exclude intercept column
+y_train <- trainData_sqrt$scaled_sqrt_suicide_ratio
+x_test <- model.matrix(scaled_sqrt_suicide_ratio~., testData_sqrt)[,-1] # Exclude intercept column
+y_test <- testData_sqrt$scaled_sqrt_suicide_ratio
+
+# Define the cross-validation experiment
+cvfit <- cv.glmnet(x_train, y_train, alpha = 0, type.measure = "mse")
+
+# Get the optimal lambda value
+lambda_optimal <- cvfit$lambda.min
+
+# Train the final model using the optimal lambda
+final_model <- glmnet(x_train, y_train, alpha = 0, lambda = lambda_optimal)
+
+
+predictions <- predict(final_model, s = lambda_optimal, newx = x_test)
+
+# Evaluate the performance
+rmse <- mean((predictions - y_test)^2)
+
+print(paste("MSE on the test set: ", rmse))
+
+rsq <- 1 - sum((predictions - y_test)^2) / sum((mean(y_test) - y_test)^2)
+print(paste("RSQ test :",rsq))
+# Calculate adjusted R-squared
+n <- length(y_test) # number of observations
+p <- coef(final_model, s = "lambda.min") # number of predictors
+adj_rsq <- 1 - (1 - rsq) * (n - 1) / (n - length(p) - 1)
+
+print(paste("Adjuster R squre :",adj_rsq))
+```
+```{r}
+vec1 <-c("Simple Linear",0.2596,0.7138,0.7052,"log_suicide_ratio")
+vec2<-c("Simple Linear",0.278,0.6578,0.6475,"sqrt_suicide_ratio")
+vec3<-c("Simple Linear",143.18,0.485,0.4703,"suicide_ratio")
+vec4<-c("Lasso",0.2604,0.7129,0.7042,"log_suicide_ratio")
+vec5<-c("Lasso",0.2798,0.655,0.6453,"sqrt_suicide_ratio")
+vec6<-c("Ridge",0.2615,"0.7116","0.7028","log_suicide_ratio")
+vec7<- c("Ridge",0.2758,0.6607,0.6503,"sqrt_suicide_ratio")
+```
+
+# 5.Conclusions
+
+```{r}
+df <- data.frame(Model=rep(NA,7), 
+                 Mean_Squared_Error=rep(NA,7), 
+                 R_squared=rep(NA,7), 
+                 Adjusted_R_squared=rep(NA,7), 
+                 Target=rep(NA,7))
+```
+```{r}
+df[1, ] <- vec1
+df[2, ] <- vec2
+df[3, ] <- vec3
+df[4, ] <- vec4
+df[5, ] <- vec5
+df[6, ] <- vec6
+df[7, ] <- vec7
+```
+
+```{r}
+df
+```
+The simple linear regression model with log as the target slightly outperforms the others. However, simple linear, Lasso, and Ridge regressions with log as the target demonstrated quite similar performance. To distinguish more effectively between these models, we should employ cross-validation techniques.
+
+Now, let's explore the importance of each feature in the simple linear regression model, where the target is 'log_suicide_ratio'. This will give us more insight into the significant predictors in our model.
+```{r}
+library(Metrics)
+formula <- as.formula(paste("scaled_log_suicide_ratio", "~", paste(scaled_log_suicide_ratio_var, collapse = " + ")))
+
+model <- lm(formula, data = trainData_log)
+data_test <- testData_log
+# Make predictions on the testing data
+predictions <- predict(model, newdata = testData_log)
+target <-"scaled_log_suicide_ratio"
+# Calculate Mean Squared Error (MSE)
+mse <- mse(testData_log$scaled_log_suicide_ratio, predictions)
+print(paste0("MSE: ", mse))
+
+# Calculate R-squared
+sse = sum((predictions - testData_log$scaled_log_suicide_ratio)^2)
+sst = sum((testData_log$scaled_log_suicide_ratio - mean(testData_log$scaled_log_suicide_ratio))^2)
+r_squared = 1 - sse / sst
+print(paste0("R-squared: ", r_squared))
+
+# Calculate Adjusted R-squared
+n = length(testData_log$scaled_log_suicide_ratio) # number of observations
+p = length(coef(model)) - 1 # number of predictors
+adjusted_r_squared = 1 - (1 - r_squared) * ((n - 1) / (n - p - 1))
+print(paste0("Adjusted R-squared: ", adjusted_r_squared))
+
+```
+```{r}
+summary(model)
+```
+as we can see the most important feature in order are:
+
+1. sex
+2. country
+3. age
+4. scaled_avg_temp
+5. scaled_log_GDP_capita
+6. population_bine_jenks
